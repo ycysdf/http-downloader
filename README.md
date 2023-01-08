@@ -1,4 +1,20 @@
-<div align="center">
+<div>
+  <!-- Crates version -->
+  <a href="https://crates.io/crates/http-downloader">
+    <img src="https://shields.io/crates/v/http-downloader" alt="Crates.io version" />
+  </a>
+  <!-- Downloads -->
+  <a href="https://crates.io/crates/http-downloader">
+    <img src="https://shields.io/crates/d/http-downloader" alt="Download" />
+  </a>
+  <!-- Downloads -->
+  <a href="https://github.com/ycysdf/http-downloader/blob/main/LICENSE">
+    <img src="https://shields.io/crates/l/http-downloader" alt="LICENSE" />
+  </a>
+</div>
+
+
+<div>
   <h4>
     <a href="https://github.com/ycysdf/http-downloader/blob/main/examples"> Examples </a>
     <span> | </span>
