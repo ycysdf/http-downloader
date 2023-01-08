@@ -1,0 +1,54 @@
+[package]
+name = "http-downloader"
+version = "0.1.0"
+authors = ["ycysdf"]
+categories = ["download", "http", "network"]
+description = "A simple http downloader"
+edition = "2021"
+homepage = "https://github.com/ycysdf/http-downloader"
+keywords = ["http", "download", "network"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/ycysdf/http-downloader"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[workspace]
+members = [
+    "examples/*"
+]
+
+[dependencies]
+reqwest = { version = "0.11.13", features = ["default-tls", 'stream'] }
+headers = "0.3"
+parking_lot = { version = "0.12" }
+tokio = { version = "1", features = ["rt", "macros"] }
+tokio-util = { version = "0.7", features = [] }
+thiserror = "1"
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1.3"
+futures-util = { version = "0.3" }
+url = { version = "2" }
+
+# optional dependencies
+bson = { version = "2.3.0", optional = true }
+serde = { version = "1.0", optional = true }
+tracing = { version = "0.1", optional = true }
+async-stream = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3" }
+bson = { version = "2.3.0" }
+serde = { version = "1.0" }
+tracing = { version = "0.1" }
+
+
+[features]
+default = ["tracing"]
+full = ["status-tracker", "speed-limiter", "speed-tracker", "breakpoint-resume", "tracing", "bson-file-archiver", "async-stream"]
+status-tracker = ["tracing"]
+speed-tracker = ["tracing"]
+speed-limiter = ["tracing"]
+breakpoint-resume = ["tracing"]
+bson-file-archiver = ["breakpoint-resume", "tracing", "serde", "bson", "url/serde"]
