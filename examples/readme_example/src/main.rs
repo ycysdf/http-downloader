@@ -15,6 +15,9 @@ use http_downloader::{
 };
 use http_downloader::bson_file_archiver::{ArchiveFilePath, BsonFileArchiverBuilder};
 
+
+
+
 #[tokio::main]
 async fn main() -> Result<()> {
     {
@@ -23,22 +26,38 @@ async fn main() -> Result<()> {
 
     let save_dir = PathBuf::from("C:/download");
     let test_url = Url::parse("https://dldir1.qq.com/qqfile/qq/PCQQ9.6.9/QQ9.6.9.28878.exe")?;
-    let (downloader, (_status_state, _speed_state, speed_limiter, ..)) =
+    let (downloader, (status_state, speed_state, speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
-            .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap())
+            .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap()) // 块大小
             .download_connection_count(NonZeroU8::new(3).unwrap()) // 下载连接数
             .build((
-                DownloadStatusTrackerExtension { log: true }, // 下载状态追踪扩展
-                DownloadSpeedTrackerExtension { log: true }, // 下载速度追踪扩展
-                DownloadSpeedLimiterExtension {  // 下载速度限制扩展
+                // 下载状态追踪扩展
+                // by cargo feature "status-tracker" enable
+                DownloadStatusTrackerExtension { log: true },
+                // 下载速度追踪扩展
+                // by cargo feature "speed-tracker" enable
+                DownloadSpeedTrackerExtension { log: true },
+                // 下载速度限制扩展，
+                // by cargo feature "speed-limiter" enable
+                DownloadSpeedLimiterExtension {
                     byte_count_per: None
                 },
-                DownloadBreakpointResumeExtension { // 断点续传扩展
+                // 断点续传扩展，
+                // by cargo feature "breakpoint-resume" enable
+                DownloadBreakpointResumeExtension {
+                    // BsonFileArchiver by cargo feature "bson-file-archiver" enable
                     download_archiver_builder: BsonFileArchiverBuilder::new(ArchiveFilePath::Suffix("bson".to_string()))
                 }
             ));
     info!("Start download，开始下载");
     let finished_future = downloader.start().await?;
+
+    let _status = status_state.status(); // get download status， 获取状态
+    let _status_receiver = status_state.status_receiver; //status watcher，状态监听器
+    let _byte_per_second = speed_state.download_speed(); // get download speed，Byte per second，获取速度，字节每秒
+    let _speed_receiver = speed_state.receiver; // get download speed watcher，速度监听器
+
+    // downloader.cancel() // 取消下载
 
     // 打印下载进度
     // Print download Progress

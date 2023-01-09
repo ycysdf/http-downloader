@@ -35,7 +35,7 @@ impl DownloaderStatus {
 }
 
 pub struct DownloadStatusTrackerState {
-    pub status_receiver: sync::watch::Receiver<DownloaderStatus>,
+    pub status_receiver: sync::watch::Receiver<DownloaderStatus>, // todo: Change to receiver
 }
 
 impl DownloadStatusTrackerState {
@@ -67,7 +67,7 @@ impl<DC: DownloadController> DownloadExtension<DC> for DownloadStatusTrackerExte
                 status_receiver: status_receiver.clone(),
                 status_sender: Arc::new(status_sender),
             }),
-            DownloadStatusTrackerState { status_receiver },
+            DownloadStatusTrackerState { status_receiver: status_receiver },
         )
     }
 }
