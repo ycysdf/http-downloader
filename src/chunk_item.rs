@@ -103,9 +103,12 @@ impl ChunkItem {
                 .client
                 .execute(*request)
                 .await?;
-            let etag = response.headers().typed_get::<headers::ETag>();
-            if etag != self.etag {
-                return Err(DownloadError::ServerFileAlreadyChanged);
+            if self.etag.is_some() {
+                let etag = response.headers().typed_get::<headers::ETag>();
+                if etag != self.etag {
+                    tracing::error!("current etag: {:?} , target etag:{:?}", self.etag, etag);
+                    return Err(DownloadError::ServerFileAlreadyChanged);
+                }
             }
             let mut stream = response.bytes_stream();
             while let Some(bytes) = stream.next().await {

@@ -81,6 +81,11 @@ impl HttpDownloaderBuilder {
         self
     }
 
+    pub fn etag(mut self, etag:Option<ETag> ) -> Self {
+        self.etag = etag;
+        self
+    }
+
     pub fn download_connection_count(mut self, download_connection_count: NonZeroU8) -> Self {
         self.download_connection_count = download_connection_count;
         self

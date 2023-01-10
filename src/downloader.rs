@@ -332,7 +332,23 @@ impl HttpFileDownloader {
         let response = self.client.execute(request);
         #[cfg(feature = "tracing")]
             let response = response.instrument(info_span!("request for content_length"));
-        let response = response.await?;
+        let response = response.await;
+        if response.is_err() {
+            self.total_size_semaphore.add_permits(1);
+        }
+        let response = response?;
+        let etag = {
+            if self.config.etag.is_some() {
+                let etag = response.headers().typed_get::<headers::ETag>();
+                if etag == self.config.etag {
+                    error!("current etag: {:?} , target etag:{:?}", self.config.etag, etag);
+                    return Err(DownloadError::ServerFileAlreadyChanged);
+                }
+                etag
+            }else {
+                None
+            }
+        };
         let content_length = response.headers().typed_get::<headers::ContentLength>().map(|n| n.0);
         let accept_ranges = response.headers().typed_get::<headers::AcceptRanges>();
 
@@ -380,7 +396,7 @@ impl HttpFileDownloader {
                     cancel_token,
                     self.downloaded_len_sender.clone(),
                     chunk_iterator,
-                    self.config.etag.clone(),
+                    etag,
                     self.config.request_retry_count,
                 ));
                 DownloadWay::Ranges(chunk_manager)
