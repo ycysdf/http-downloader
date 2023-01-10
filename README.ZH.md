@@ -24,7 +24,9 @@
 
 ## 一个简单的 Http 下载器
 
-## 功能
+我最近在做一个下载器软件，便把 Http 下载部分单独抽出来进行了开源
+
+## 功能：
 
 - 多线程下载
 - 断点续传
@@ -32,7 +34,21 @@
 - 下载速度追踪
 - 通过扩展去增加功能
 
+也支持动态去修改下载连接数、下载速度限制大小等
+
+一些功能是通过扩展去添加的，比如：断点续传、下载速度限制、下载速度追踪、状态追踪等
+
 ## 示例
+
+通过 `HttpDownloaderBuilder` `build` 函数参数去设置需要添加的扩展，需要传入一个元组，元组的成员就是扩展
+
+在下面实例里，我传入了4 个扩展，所以 `build` 函数除了返回 下载器实例以外，还会返回一个4个成员的元组，这个元组包含了扩展的状态信息，
+
+例如 `DownloadSpeedTrackerExtension` 扩展，就对应 `DownloadSpeedTrackerState` 状态
+
+通过`DownloadSpeedTrackerState` 的  `reciver` 成员就可以去监听下载速度，或者通过 `download_speed`函数直接去获取下载速度
+
+
 
 ```rust
 use std::num::{NonZeroU8, NonZeroUsize};
