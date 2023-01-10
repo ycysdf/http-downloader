@@ -38,6 +38,10 @@
 
 一些功能是通过扩展去添加的，比如：断点续传、下载速度限制、下载速度追踪、状态追踪等
 
+## 终端 UI
+
+有一个简单的终端 UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
+
 ## 示例
 
 通过 `HttpDownloaderBuilder` `build` 函数参数去设置需要添加的扩展，需要传入一个元组，元组的成员就是扩展

@@ -25,6 +25,8 @@
 
 ## A simple http downloader
 
+terminal ui：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
+
 ## Features 
 
 - Multithreaded download
