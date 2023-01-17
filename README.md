@@ -23,10 +23,6 @@
 </div>
 
 
-## A simple http downloader
-
-terminal ui：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
-
 ## Features 
 
 - Multithreaded download
@@ -34,6 +30,18 @@ terminal ui：[https://github.com/ycysdf/http-downloader-tui](https://github.com
 - Download speed limit
 - Download speed tracking
 - Add functionality through extensions
+
+## Required minimum dependency
+
+```toml
+http-downloader = { version = "0.1" }
+url = { version = "2" }
+tokio = { version = "1", features = ["rt", "macros"] }
+```
+
+## A simple http downloader
+
+terminal ui：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
 
 ## Example
 

@@ -38,6 +38,14 @@
 
 一些功能是通过扩展去添加的，比如：断点续传、下载速度限制、下载速度追踪、状态追踪等
 
+## 最少需要添加以下依赖
+
+```toml
+http-downloader = { version = "0.1" }
+url = { version = "2" }
+tokio = { version = "1", features = ["rt", "macros"] }
+```
+
 ## 终端 UI
 
 有一个简单的终端 UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
