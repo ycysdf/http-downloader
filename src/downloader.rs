@@ -488,8 +488,9 @@ impl ExtensibleHttpFileDownloader {
     ) -> Result<impl Future<Output=Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
         let params = DownloadParams::new();
         let controller = self.download_controller.to_owned();
+        let future = controller.download(params).await?;
         let r = tokio::spawn(async move {
-            controller.download(params).await?.await
+            future.await
         });
         Ok(async {
             r.await?
