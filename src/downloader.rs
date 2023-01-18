@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::io::SeekFrom;
-use std::num::{NonZeroU8, NonZeroUsize};
+use std::num::{NonZeroU64, NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -222,14 +222,14 @@ impl HttpFileDownloader {
         *self.downloaded_len_receiver.borrow()
     }
 
-    pub async fn total_size(&self) -> Option<u64> {
+    pub async fn total_size(&self) -> Option<NonZeroU64> {
         let _ = self.total_size_semaphore.acquire().await;
         self.total_size_semaphore.add_permits(1);
         let content_length = self.content_length.load(Ordering::Relaxed);
         if content_length == 0 {
             None
         } else {
-            Some(content_length)
+            Some(NonZeroU64::new(content_length).unwrap())
         }
     }
 
@@ -527,7 +527,7 @@ impl ExtensibleHttpFileDownloader {
         self.inner.downloaded_len()
     }
     #[inline]
-    pub async fn total_size(&self) -> Option<u64> {
+    pub async fn total_size(&self) -> Option<NonZeroU64> {
         self.inner.total_size().await
     }
     #[inline]
