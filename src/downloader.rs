@@ -226,7 +226,6 @@ impl HttpFileDownloader {
 
     pub async fn total_size(&self) -> Option<NonZeroU64> {
         let _ = self.total_size_semaphore.acquire().await;
-        self.total_size_semaphore.add_permits(1);
         let content_length = self.content_length.load(Ordering::Relaxed);
         if content_length == 0 {
             None
