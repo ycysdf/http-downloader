@@ -98,7 +98,7 @@ pub enum DownloadStopError {
 #[derive(Error, Debug)]
 pub enum ChangeConnectionCountError {
     #[error("SendError")]
-    SendError(#[from] sync::watch::error::SendError<NonZeroU8>),
+    SendError(#[from] SendError<NonZeroU8>),
     #[error("it is no start")]
     NoStart,
     #[error("The download target is not supported")]
@@ -127,7 +127,7 @@ pub struct HttpFileDownloader {
     client: reqwest::Client,
     downloading_state: RwLock<Option<DownloadingState>>,
     downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
-    pub cancel_token: sync::Mutex<CancellationToken>,
+    pub cancel_token: Mutex<CancellationToken>,
     total_size_semaphore: Arc<sync::Semaphore>,
 }
 
@@ -148,7 +148,7 @@ impl HttpFileDownloader {
             downloading_state: RwLock::new(None),
             downloaded_len_receiver,
             downloaded_len_sender: Arc::new(downloaded_len_sender),
-            cancel_token: sync::Mutex::new(cancel_token),
+            cancel_token: Mutex::new(cancel_token),
         }
     }
 
@@ -183,7 +183,6 @@ impl HttpFileDownloader {
 
     #[cfg(feature = "async-stream")]
     pub async fn downloaded_len_stream(&self) -> impl Stream<Item=u64> {
-        use std::time::Duration;
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
         async_stream::stream! {
             let downloaded_len = *downloaded_len_receiver.borrow();
@@ -191,14 +190,15 @@ impl HttpFileDownloader {
             while downloaded_len_receiver.changed().await.is_ok() {
                 let downloaded_len = *downloaded_len_receiver.borrow();
                 yield downloaded_len;
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                if let Some(duration) = self.config.downloaded_len_send_interval{
+                   tokio::time::sleep(duration).await;
+                }
             }
         }
     }
 
     #[cfg(feature = "async-stream")]
     pub async fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>>> {
-        use std::time::Duration;
         match self.downloading_state.read().as_ref() {
             None => None,
             Some(r) => match r.download_way.as_ref() {
@@ -210,7 +210,9 @@ impl HttpFileDownloader {
                           yield chunk_manager.get_chunks().await;
                           while downloaded_len_receiver.changed().await.is_ok() {
                               yield chunk_manager.get_chunks().await;
-                              tokio::time::sleep(Duration::from_millis(100)).await;
+                              if let Some(duration) = self.config.chunks_send_interval{
+                                 tokio::time::sleep(duration).await;
+                              }
                           }
                     })
                 }

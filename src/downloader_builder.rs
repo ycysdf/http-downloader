@@ -19,6 +19,8 @@ pub struct HttpDownloadConfig {
     pub request_retry_count: u8,
     pub timeout: Option<Duration>,
     pub header_map: HeaderMap,
+    pub downloaded_len_send_interval: Option<Duration>,
+    pub chunks_send_interval: Option<Duration>,
 }
 
 impl HttpDownloadConfig {
@@ -38,6 +40,8 @@ pub struct HttpDownloaderBuilder {
     etag: Option<ETag>,
     client: Option<reqwest::Client>,
     header_map: HeaderMap,
+    downloaded_len_send_interval: Option<Duration>,
+    chunks_send_interval: Option<Duration>,
 }
 
 impl HttpDownloaderBuilder {
@@ -53,11 +57,21 @@ impl HttpDownloaderBuilder {
             etag: None,
             timeout: None,
             header_map: Default::default(),
+            downloaded_len_send_interval: Some(Duration::from_millis(300)),
+            chunks_send_interval: Some(Duration::from_millis(300)),
         }
     }
 
     pub fn client(mut self, client: Option<reqwest::Client>) -> Self {
         self.client = client;
+        self
+    }
+    pub fn downloaded_len_send_interval(mut self, downloaded_len_send_interval: Option<Duration>) -> Self {
+        self.downloaded_len_send_interval = downloaded_len_send_interval;
+        self
+    }
+    pub fn chunks_send_interval(mut self, chunks_send_interval: Option<Duration>) -> Self {
+        self.chunks_send_interval = chunks_send_interval;
         self
     }
 
@@ -110,6 +124,8 @@ impl HttpDownloaderBuilder {
                 request_retry_count: self.request_retry_count,
                 timeout: self.timeout,
                 header_map: self.header_map,
+                downloaded_len_send_interval: self.downloaded_len_send_interval,
+                chunks_send_interval: self.chunks_send_interval,
             }),
         ));
         let (ec, es) = extension.layer(downloader.clone(), downloader.clone());
