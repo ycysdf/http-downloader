@@ -21,20 +21,19 @@ pub mod speed_tracker;
 pub mod status_tracker;
 
 #[async_trait]
-pub trait DownloadController: Send + Sync+'static {
+pub trait DownloadController: Send + Sync + 'static {
     async fn download(
         self: Arc<Self>,
         params: DownloadParams,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause,DownloadError>>, DownloadStartError>;
+    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>;
     async fn cancel(&self) -> Result<(), DownloadStopError>;
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug)]
 pub struct DownloadArchiveData {
-    // tag: String,
-    // creation_date: DateTime<Local>,
     pub downloaded_len: u64,
+    pub downloading_duration: u32,
     pub chunk_data: Option<ChunkData>,
 }
 
@@ -43,7 +42,7 @@ pub struct DownloadParams {
     pub download_way_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadWay>>>,
     pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
     pub archive_data: Option<DownloadArchiveData>,
-    pub breakpoint_resume:bool,
+    pub breakpoint_resume: bool,
 }
 
 impl DownloadParams {

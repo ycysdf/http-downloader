@@ -184,13 +184,14 @@ impl HttpFileDownloader {
     #[cfg(feature = "async-stream")]
     pub async fn downloaded_len_stream(&self) -> impl Stream<Item=u64> {
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
+        let duration = self.config.downloaded_len_send_interval.clone();
         async_stream::stream! {
             let downloaded_len = *downloaded_len_receiver.borrow();
             yield downloaded_len;
             while downloaded_len_receiver.changed().await.is_ok() {
                 let downloaded_len = *downloaded_len_receiver.borrow();
                 yield downloaded_len;
-                if let Some(duration) = self.config.downloaded_len_send_interval{
+                if let Some(duration) = duration{
                    tokio::time::sleep(duration).await;
                 }
             }
@@ -206,11 +207,12 @@ impl HttpFileDownloader {
                 DownloadWay::Ranges(chunk_manager) => {
                     let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
                     let chunk_manager = chunk_manager.to_owned();
+                    let duration = self.config.chunks_send_interval.clone();
                     Some(async_stream::stream! {
                           yield chunk_manager.get_chunks().await;
                           while downloaded_len_receiver.changed().await.is_ok() {
                               yield chunk_manager.get_chunks().await;
-                              if let Some(duration) = self.config.chunks_send_interval{
+                              if let Some(duration) = duration {
                                  tokio::time::sleep(duration).await;
                               }
                           }
@@ -346,7 +348,7 @@ impl HttpFileDownloader {
                     return Err(DownloadError::ServerFileAlreadyChanged);
                 }
                 etag
-            }else {
+            } else {
                 None
             }
         };
@@ -367,8 +369,10 @@ impl HttpFileDownloader {
         let download_way = {
             if content_length.is_some() && accept_ranges.is_some() {
                 let content_length = content_length.unwrap();
+                let downloading_duration =archive_data.as_ref().map(|n| n.downloading_duration).unwrap_or(0);
                 let chunk_data = archive_data
                     .and_then(|archive_data| {
+                        tracing::info!("Archive Data: {:?}",archive_data);
                         self.downloaded_len_sender
                             .send(archive_data.downloaded_len)
                             .unwrap_or_else(|_err| {
@@ -399,6 +403,7 @@ impl HttpFileDownloader {
                     chunk_iterator,
                     etag,
                     self.config.request_retry_count,
+                    downloading_duration,
                 ));
                 DownloadWay::Ranges(chunk_manager)
             } else {

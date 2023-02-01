@@ -95,6 +95,7 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadBreakpointResumeCo
                 }));
                 Some(DownloadArchiveData {
                     downloaded_len: chunk_manager.chunk_iterator.content_length - data.remaining_len(),
+                    downloading_duration: chunk_manager.downloading_duration.load(Ordering::Relaxed),
                     chunk_data: Some(data),
                 })
             } else {
@@ -139,6 +140,7 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController for Dow
                         data.last_incomplete_chunks.extend(chunk_manager.get_chunks().await.iter().map(|n| n.chunk_info.to_owned()));
                         let archive_data = DownloadArchiveData {
                             downloaded_len: chunk_manager.chunk_iterator.content_length - data.remaining_len(),
+                            downloading_duration: chunk_manager.downloading_duration.load(Ordering::Relaxed),
                             chunk_data: Some(data),
                         };
                         notified = chunk_manager.data_archive_notify.notified();

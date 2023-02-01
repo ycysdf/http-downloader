@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         async move {
             let total_len = downloader.total_size().await;
             if let Some(total_len) = total_len {
-                info!("Total size: {:.2} Mb",total_len as f64 / 1024_f64/ 1024_f64);
+                info!("Total size: {:.2} Mb",total_len.get() as f64 / 1024_f64/ 1024_f64);
             }
             while downloaded_len_receiver.changed().await.is_ok() {
                 let progress = *downloaded_len_receiver.borrow();
