@@ -1,6 +1,6 @@
 [package]
 name = "http-downloader"
-version = "0.1.3"
+version = "0.1.4"
 authors = ["ycysdf"]
 categories = ["download", "http", "network"]
 description = "A simple http downloader"
