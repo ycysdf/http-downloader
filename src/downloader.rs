@@ -19,7 +19,6 @@ use tokio::{io, sync};
 use tokio::fs::File;
 use tokio::io::AsyncSeekExt;
 use tokio::sync::Mutex;
-#[cfg(feature = "status-tracker")]
 use tokio::sync::watch::error::SendError;
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
