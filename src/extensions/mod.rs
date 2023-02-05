@@ -30,7 +30,7 @@ pub trait DownloadController: Send + Sync + 'static {
 }
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DownloadArchiveData {
     pub downloaded_len: u64,
     pub downloading_duration: u32,
