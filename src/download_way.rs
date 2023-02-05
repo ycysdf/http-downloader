@@ -17,16 +17,19 @@ use crate::{ChunkManager, DownloadedLenChangeNotify, DownloadError, DownloadingE
 pub struct SingleDownload {
     cancel_token: CancellationToken,
     downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
+    content_length: Option<u64>,
 }
 
 impl SingleDownload {
     pub fn new(
         cancel_token: CancellationToken,
         downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
+        content_length: Option<u64>,
     ) -> Self {
         Self {
             cancel_token,
             downloaded_len_sender,
+            content_length
         }
     }
 

@@ -41,7 +41,7 @@ pub struct DownloadArchiveData {
 pub struct DownloadParams {
     pub download_way_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadWay>>>,
     pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
-    pub archive_data: Option<DownloadArchiveData>,
+    pub archive_data: Option<Box<DownloadArchiveData>>,
     pub breakpoint_resume: bool,
 }
 

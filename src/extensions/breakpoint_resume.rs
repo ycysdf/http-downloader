@@ -35,7 +35,8 @@ pub struct DownloadBreakpointResumeExtension<T: DownloadDataArchiverBuilder> {
 #[async_trait]
 pub trait DownloadDataArchiver: Send + Sync + 'static {
     async fn save(&self, data: Box<DownloadArchiveData>) -> Result<(), anyhow::Error>;
-    async fn load(&self) -> Result<Option<DownloadArchiveData>, anyhow::Error>;
+    async fn load(&self) -> Result<Option<Box<DownloadArchiveData>>, anyhow::Error>;
+    async fn download_started(&self, download_way: &Arc<DownloadWay>, is_resume: bool)->Result<(),anyhow::Error>;
     async fn download_finished(&self);
 }
 
@@ -118,6 +119,7 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController for Dow
         let (sender, receiver) = sync::oneshot::channel();
         params.breakpoint_resume = true;
         params.archive_data = self.download_archiver.load().await?;
+        let is_resume = !params.archive_data.is_none();
 
         params.download_way_oneshot_vec.push(sender);
         let download_future = self.inner.to_owned().download(params).await?;
@@ -128,6 +130,7 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController for Dow
             let chunk_manager_mutex = chunk_manager_mutex.clone();
             async move {
                 let download_way_receiver = receiver.await.map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
+                download_archiver.download_started(&download_way_receiver,is_resume).await?;
                 if let DownloadWay::Ranges(chunk_manager) = download_way_receiver.as_ref() {
                     { *chunk_manager_mutex.lock().await = Some(chunk_manager.clone()); }
                     let mut notified =

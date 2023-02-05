@@ -1,11 +1,12 @@
 use std::ffi::OsStr;
 use std::fmt::Display;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use anyhow::Error;
 use async_trait::async_trait;
 
-use crate::{DownloadArchiveData, HttpDownloadConfig};
+use crate::{DownloadArchiveData, DownloadWay, HttpDownloadConfig};
 use crate::breakpoint_resume::{DownloadDataArchiver, DownloadDataArchiverBuilder};
 
 pub enum ArchiveFilePath<T: Display> {
@@ -50,19 +51,20 @@ pub struct BsonFileArchiver {
 
 #[async_trait]
 impl DownloadDataArchiver for BsonFileArchiver {
-    async fn save(&self, data: Box<DownloadArchiveData>) -> anyhow::Result<(), Error> {
+    async fn save(&self, data: Box<DownloadArchiveData>) -> Result<(), anyhow::Error> {
         let bytes = bson::to_vec(&data);
         let bytes = bytes.map_err(|err| {
             tracing::error!("serialize archive data failed! {}", err);
             Error::new(err)
         })?;
-        Ok(tokio::fs::write(&self.archive_file_path, bytes).await.map_err(|err| {
+        tokio::fs::write(&self.archive_file_path, bytes).await.map_err(|err| {
             tracing::error!("write data to file failed! {}", err);
             err
-        })?)
+        })?;
+        Ok(())
     }
 
-    async fn load(&self) -> anyhow::Result<Option<DownloadArchiveData>, Error> {
+    async fn load(&self) -> anyhow::Result<Option<Box<DownloadArchiveData>>, Error> {
         if !self.archive_file_path.exists() {
             return Ok(None);
         }
@@ -74,7 +76,11 @@ impl DownloadDataArchiver for BsonFileArchiver {
             tracing::error!("deserialize file {:?} failed! {}", &self.archive_file_path, err);
             err
         })?;
-        Ok(Some(data))
+        Ok(Some(Box::new(data)))
+    }
+
+    async fn download_started(&self, _download_way: &Arc<DownloadWay>, _is_resume: bool) -> anyhow::Result<(), Error> {
+        Ok(())
     }
 
     async fn download_finished(&self) {

@@ -409,6 +409,7 @@ impl HttpFileDownloader {
                 DownloadWay::Single(SingleDownload::new(
                     cancel_token,
                     self.downloaded_len_sender.clone(),
+                    content_length,
                 ))
             }
         };
