@@ -27,9 +27,9 @@ pub struct ChunkManager {
     pub download_connection_count_receiver: sync::watch::Receiver<NonZeroU8>,
     client: reqwest::Client,
     cancel_token: CancellationToken,
-    superfluities_connection_count: AtomicU8,
-    etag: Option<headers::ETag>,
-    retry_count: u8,
+    pub superfluities_connection_count: AtomicU8,
+    pub etag: Option<headers::ETag>,
+    pub retry_count: u8,
     pub downloading_duration: AtomicU32,
 }
 
