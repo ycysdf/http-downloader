@@ -479,6 +479,7 @@ impl HttpFileDownloader {
                     .await?
             }
         };
+        self.reset();
 
         end_sender.send(dec).map_err(|err| {
             #[cfg(feature = "tracing")]
