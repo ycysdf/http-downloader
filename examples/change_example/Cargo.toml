@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-http-downloader = { path = "../../../http-downloader", features = ["full"] }
+http-downloader = { path = "../../../http-downloader", features = ["all-extensions"] }
 url = { version = "2" }
 tracing-subscriber = { version = "0.3" }
 bson = { version = "2.3.0" }

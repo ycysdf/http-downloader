@@ -8,9 +8,9 @@ use futures_util::FutureExt;
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
 use tokio::{select, sync};
-use tracing::{info};
+use tracing::info;
 
-use crate::{DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, HttpFileDownloader};
+use crate::{DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay, HttpFileDownloader};
 
 #[derive(Default)]
 pub struct DownloadSpeedTrackerExtension {
@@ -83,24 +83,35 @@ pub struct DownloadSpeedExtensionController<DC: DownloadController> {
 impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionController<DC> {
     async fn download(
         self: Arc<Self>,
-        params: DownloadParams,
+        mut params: DownloadParams,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
-        let last_downloaded_len = params.archive_data.as_ref().map(|n| n.downloaded_len).unwrap_or(0);
+        let (sender, download_way_receiver) = sync::oneshot::channel();
+        params.download_way_oneshot_vec.push(sender);
+
+        // let last_downloaded_len = params.archive_data.as_ref().map(|n| n.downloaded_len).unwrap_or(0);
         let download_future = self.inner.to_owned().download(params).await?;
 
-        let mut receiver = self.downloaded_len_receiver.clone();
-        let sender = self.download_speed_sender.clone();
+        let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
+        let downloaded_len_sender = self.download_speed_sender.clone();
         let log = self.log;
 
 
         let future = async move {
+            let download_way_receiver = download_way_receiver
+                .await
+                .map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
+
             let mut instant = Instant::now();
-            let mut last_downloaded_len = last_downloaded_len;
+            let mut last_downloaded_len = if let DownloadWay::Ranges(chunk_manager) = download_way_receiver.as_ref() {
+                chunk_manager.downloaded_len()
+            } else {
+                0
+            };
             loop {
-                receiver.changed().await.map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
+                downloaded_len_receiver.changed().await.map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
                 if instant.elapsed().as_millis() > 1000 {
-                    let downloaded_len = *receiver.borrow();
-                    let value = downloaded_len - last_downloaded_len;
+                    let downloaded_len = *downloaded_len_receiver.borrow();
+                    let value = downloaded_len.max(last_downloaded_len) - last_downloaded_len;
                     instant = Instant::now();
                     #[cfg(feature = "tracing")]
                     if log {
@@ -111,7 +122,7 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionContro
                             info!("Download speed: {:.2} Kb/s", value);
                         }
                     }
-                    let _ = sender.send(value);
+                    let _ = downloaded_len_sender.send(value);
                     last_downloaded_len = downloaded_len;
                 }
             }

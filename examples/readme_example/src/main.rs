@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
     }
 
     let save_dir = PathBuf::from("C:/download");
-    let test_url = Url::parse("https://dldir1.qq.com/qqfile/qq/PCQQ9.6.9/QQ9.6.9.28878.exe")?;
+    let test_url = Url::parse("http://mirror.hk.leaseweb.net/speedtest/1000mb.bin")?;
     let (downloader, (status_state, speed_state, speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap()) // 块大小
@@ -85,7 +85,7 @@ async fn main() -> Result<()> {
         tokio::time::sleep(Duration::from_secs(2)).await;
         info!("Start speed limit，开始限速");
         speed_limiter.change_speed(Some(1024 * 1024 * 2)).await;
-        tokio::time::sleep(Duration::from_secs(4)).await;
+        tokio::time::sleep(Duration::from_secs(20)).await;
         info!("Remove the download speed limit，解除速度限制");
         speed_limiter.change_speed(None).await;
     });

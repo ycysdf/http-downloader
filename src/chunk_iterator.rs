@@ -6,10 +6,11 @@ use std::sync::Arc;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct RemainingChunks {
-    pub chunk_size: NonZeroUsize,
+    pub chunk_size: usize,
     pub ranges: Vec<ChunkRange>,
 }
 
@@ -33,12 +34,12 @@ enum ChunkHandle {
 impl RemainingChunks {
     pub fn new(chunk_size: NonZeroUsize, total_len: u64) -> Self {
         Self {
-            chunk_size,
+            chunk_size:chunk_size.get(),
             ranges: vec![ChunkRange::from_len(0, total_len)],
         }
     }
     pub fn take_first(&mut self) -> Option<ChunkRange> {
-        let chunk_size = self.chunk_size.get() as u64;
+        let chunk_size = self.chunk_size as u64;
         match self.ranges.first().map(|n| n.to_owned()) {
             None => None,
             Some(range) => {
@@ -122,6 +123,7 @@ impl RemainingChunks {
     }
 }
 
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ChunkData {
@@ -181,7 +183,7 @@ impl ChunkIterator {
     }
 }
 
-
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct ChunkInfo {
@@ -190,6 +192,7 @@ pub struct ChunkInfo {
 }
 
 // like RangeInclusive
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Copy, Clone)]
 pub struct ChunkRange {

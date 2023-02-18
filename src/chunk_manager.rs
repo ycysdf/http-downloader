@@ -76,7 +76,7 @@ impl ChunkManager {
 
     pub fn change_chunk_size(&self, chunk_size: NonZeroUsize) {
         let mut guard = self.chunk_iterator.data.lock();
-        guard.remaining.chunk_size = chunk_size;
+        guard.remaining.chunk_size = chunk_size.get();
     }
 
     pub fn downloaded_len(&self) -> u64 {
@@ -89,9 +89,9 @@ impl ChunkManager {
 
     fn clone_request(request: &Request) -> Box<Request> {
         let mut req = Request::new(request.method().clone(), request.url().clone());
-        *req.timeout_mut() = request.timeout().cloned();
         *req.headers_mut() = request.headers().clone();
         *req.version_mut() = request.version();
+        *req.timeout_mut() = request.timeout().map(Clone::clone);
         Box::new(req)
     }
 

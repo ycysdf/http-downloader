@@ -7,7 +7,10 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use tokio::sync;
 
-use crate::{ChunkData, DownloadedLenChangeNotify, DownloadError, DownloadingEndCause, DownloadStartError, DownloadStopError, DownloadWay, HttpFileDownloader};
+use crate::{
+    ChunkData, DownloadError, DownloadStartError, DownloadStopError, DownloadWay,
+    DownloadedLenChangeNotify, DownloadingEndCause, HttpFileDownloader,
+};
 
 #[cfg(feature = "breakpoint-resume")]
 pub mod breakpoint_resume;
@@ -29,12 +32,35 @@ pub trait DownloadController: Send + Sync + 'static {
     async fn cancel(&self) -> Result<(), DownloadStopError>;
 }
 
+#[cfg_attr(
+    feature = "async-graphql",
+    derive(async_graphql::SimpleObject),
+    graphql(complex)
+)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
 pub struct DownloadArchiveData {
     pub downloaded_len: u64,
     pub downloading_duration: u32,
     pub chunk_data: Option<ChunkData>,
+}
+
+#[cfg(feature = "async-graphql")]
+#[cfg_attr(feature = "async-graphql", async_graphql::ComplexObject)]
+impl DownloadArchiveData {
+    #[cfg(feature = "async-graphql")]
+    pub async fn average_download_speed(&self) -> u64 {
+        self.get_average_download_speed()
+    }
+}
+
+impl DownloadArchiveData {
+    pub fn get_average_download_speed(&self) -> u64 {
+        if self.downloading_duration == 0 {
+            return 0;
+        }
+        self.downloaded_len / self.downloading_duration as u64
+    }
 }
 
 #[derive(Default)]

@@ -63,7 +63,7 @@ impl DownloadedLenChangeNotify for SpeedLimiter {
 pub struct SpeedLimiter {
     byte_count_per: AtomicUsize,
     cur_read: AtomicUsize,
-    last_instant: RwLock<Instant>,
+    last_instant: tokio::sync::Mutex<Instant>,
 }
 
 const LIMIT_INTERVAL: u64 = 1000;
@@ -76,7 +76,7 @@ impl SpeedLimiter {
                 Self::handle_byte_count_per(byte_count_per)
             ),
             cur_read: Default::default(),
-            last_instant: RwLock::new(Instant::now()),
+            last_instant: tokio::sync::Mutex::new(Instant::now()),
         }
     }
 
@@ -90,7 +90,7 @@ impl SpeedLimiter {
     }
 
     pub async fn reset(&self) {
-        let mut last_instant = self.last_instant.write().await;
+        let mut last_instant = self.last_instant.lock().await;
         self.cur_read.store(0, Ordering::Relaxed);
         *last_instant = Instant::now();
     }
@@ -109,16 +109,16 @@ impl SpeedLimiter {
         }
 
         Some(async move {
-            let elapsed_millis = self.last_instant.read().await.elapsed();
-            if elapsed_millis.as_millis() < LIMIT_INTERVAL as u128 {
-                let mut last_instant = self.last_instant.write().await;
-                if self.cur_read.load(Ordering::SeqCst) < byte_count_per {
-                    return;
-                }
-                tokio::time::sleep(Duration::from_millis(LIMIT_INTERVAL) - elapsed_millis).await;
-                *last_instant = Instant::now();
-                self.cur_read.fetch_sub(byte_count_per, Ordering::SeqCst);
+            let mut last_instant = self.last_instant.lock().await;
+            if self.cur_read.load(Ordering::SeqCst) < byte_count_per {
+                return;
             }
+            let elapsed_millis = last_instant.elapsed();
+            if elapsed_millis.as_millis() < LIMIT_INTERVAL as u128 {
+                tokio::time::sleep(Duration::from_millis(LIMIT_INTERVAL) - elapsed_millis).await;
+            }
+            *last_instant = Instant::now();
+            self.cur_read.fetch_sub(byte_count_per, Ordering::SeqCst);
         })
     }
 }
@@ -130,6 +130,7 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedLimiterControll
         mut params: DownloadParams,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
         params.downloaded_len_change_notify = Some(self.speed_limiter.clone());
+        self.speed_limiter.reset().await;
         self.inner.to_owned().download(params).await
     }
 

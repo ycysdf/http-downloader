@@ -7,7 +7,7 @@ use anyhow::Error;
 use async_trait::async_trait;
 
 use crate::{DownloadArchiveData, DownloadWay, HttpDownloadConfig};
-use crate::breakpoint_resume::{DownloadDataArchiver, DownloadDataArchiverBuilder};
+use crate::breakpoint_resume::{DownloadDataArchiver, DownloadDataArchiverBuilder, DownloadEndInfo};
 
 pub enum ArchiveFilePath<T: Display> {
     Absolute(PathBuf),
@@ -83,7 +83,14 @@ impl DownloadDataArchiver for BsonFileArchiver {
         Ok(())
     }
 
-    async fn download_finished(&self) {
-        let _ = tokio::fs::remove_file(&self.archive_file_path).await;
+    async fn download_ended<'a>(&'a self,end_info: DownloadEndInfo<'a>) {
+        match end_info {
+            DownloadEndInfo::StartError(_) => {}
+            DownloadEndInfo::DownloadEnd(result) => {
+                if result.is_err(){
+                    let _ = tokio::fs::remove_file(&self.archive_file_path).await;
+                }
+            }
+        }
     }
 }

@@ -7,7 +7,9 @@ use std::time::Duration;
 use headers::{ETag, HeaderMap};
 use url::Url;
 
-use crate::{DownloadController, DownloadExtension, ExtensibleHttpFileDownloader, HttpFileDownloader};
+use crate::{
+    DownloadController, DownloadExtension, ExtensibleHttpFileDownloader, HttpFileDownloader,
+};
 
 pub struct HttpDownloadConfig {
     pub download_connection_count: NonZeroU8,
@@ -17,10 +19,12 @@ pub struct HttpDownloadConfig {
     pub save_dir: PathBuf,
     pub etag: Option<ETag>,
     pub request_retry_count: u8,
-    pub timeout: Option<Duration>,
+    // pub timeout: Option<Duration>,
     pub header_map: HeaderMap,
     pub downloaded_len_send_interval: Option<Duration>,
     pub chunks_send_interval: Option<Duration>,
+    pub handle_zero_content: bool,
+    pub strict_check_accept_ranges: bool,
 }
 
 impl HttpDownloadConfig {
@@ -36,12 +40,14 @@ pub struct HttpDownloaderBuilder {
     save_dir: PathBuf,
     file_name: Option<String>,
     request_retry_count: u8,
-    timeout: Option<Duration>,
+    // timeout: Option<Duration>,
     etag: Option<ETag>,
     client: Option<reqwest::Client>,
     header_map: HeaderMap,
     downloaded_len_send_interval: Option<Duration>,
     chunks_send_interval: Option<Duration>,
+    handle_zero_content: bool,
+    strict_check_accept_ranges: bool,
 }
 
 impl HttpDownloaderBuilder {
@@ -55,10 +61,12 @@ impl HttpDownloaderBuilder {
             url,
             save_dir,
             etag: None,
-            timeout: None,
+            // timeout: None,
             header_map: Default::default(),
             downloaded_len_send_interval: Some(Duration::from_millis(300)),
             chunks_send_interval: Some(Duration::from_millis(300)),
+            handle_zero_content: false,
+            strict_check_accept_ranges: true,
         }
     }
 
@@ -66,7 +74,10 @@ impl HttpDownloaderBuilder {
         self.client = client;
         self
     }
-    pub fn downloaded_len_send_interval(mut self, downloaded_len_send_interval: Option<Duration>) -> Self {
+    pub fn downloaded_len_send_interval(
+        mut self,
+        downloaded_len_send_interval: Option<Duration>,
+    ) -> Self {
         self.downloaded_len_send_interval = downloaded_len_send_interval;
         self
     }
@@ -84,9 +95,14 @@ impl HttpDownloaderBuilder {
         self.header_map = header_map;
         self
     }
-
+    /*
     pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
         self.timeout = timeout;
+        self
+    }*/
+
+    pub fn file_name(mut self, file_name: Option<String>) -> Self {
+        self.file_name = file_name;
         self
     }
 
@@ -95,8 +111,16 @@ impl HttpDownloaderBuilder {
         self
     }
 
-    pub fn etag(mut self, etag:Option<ETag> ) -> Self {
+    pub fn etag(mut self, etag: Option<ETag>) -> Self {
         self.etag = etag;
+        self
+    }
+    pub fn handle_zero_content(mut self, handle_zero_content: bool) -> Self {
+        self.handle_zero_content = handle_zero_content;
+        self
+    }
+    pub fn strict_check_accept_ranges(mut self, strict_check_accept_ranges: bool) -> Self {
+        self.strict_check_accept_ranges = strict_check_accept_ranges;
         self
     }
 
@@ -117,15 +141,19 @@ impl HttpDownloaderBuilder {
             Box::new(HttpDownloadConfig {
                 download_connection_count: self.download_connection_count,
                 chunk_size: self.chunk_size,
-                file_name: self.file_name.unwrap_or_else(|| self.url.file_name().to_string()),
+                file_name: self
+                    .file_name
+                    .unwrap_or_else(|| self.url.file_name().to_string()),
                 url: Arc::new(self.url),
                 save_dir: self.save_dir,
                 etag: self.etag,
                 request_retry_count: self.request_retry_count,
-                timeout: self.timeout,
+                // timeout: self.timeout,
                 header_map: self.header_map,
                 downloaded_len_send_interval: self.downloaded_len_send_interval,
                 chunks_send_interval: self.chunks_send_interval,
+                handle_zero_content: self.handle_zero_content,
+                strict_check_accept_ranges: self.strict_check_accept_ranges,
             }),
         ));
         let (ec, es) = extension.layer(downloader.clone(), downloader.clone());
@@ -139,14 +167,18 @@ pub trait UrlFileName {
 
 impl UrlFileName for Url {
     fn file_name(&self) -> Cow<str> {
+        let website_default: &'static str = "index.html";
+        tracing::info!("file_name data: {:?}", self);
         self.path_segments()
             .map(|n| {
-                n.last().map(Cow::Borrowed).unwrap_or_else(|| {
-                    self.domain()
-                        .map(Cow::Borrowed)
-                        .unwrap_or(Cow::Owned("index.html".to_string()))
-                })
+                n.last()
+                    .map(|n| Cow::Borrowed(if n.is_empty() { website_default } else { n }))
+                    .unwrap_or_else(|| {
+                        self.domain()
+                            .map(Cow::Borrowed)
+                            .unwrap_or(Cow::Owned(website_default.to_string()))
+                    })
             })
-            .unwrap_or_else(|| Cow::Owned("index.html".to_string()))
+            .unwrap_or_else(|| Cow::Owned(website_default.to_string()))
     }
 }

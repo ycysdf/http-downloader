@@ -25,9 +25,12 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::{error, info_span, Instrument, warn};
 
-use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, DownloadController, DownloadParams, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
+use crate::{
+    ChunkData, ChunkItem, ChunkIterator, ChunkManager, DownloadController, DownloadParams,
+    DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload,
+};
 #[cfg(feature = "status-tracker")]
-use crate::status_tracker::{DownloaderStatus, NetworkItemPendingType};
+use crate::status_tracker::DownloaderStatus;
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum DownloadingEndCause {
@@ -39,23 +42,18 @@ pub enum DownloadingEndCause {
 pub enum DownloadStartError {
     #[error("file create failed，{:?}", .0)]
     FileCrateFailed(#[from] io::Error),
-    #[error("http request failed，{:?}", .0)]
-    HttpRequestFailed(#[from] reqwest::Error),
-    #[error("already downloading")]
-    AlreadyDownloading,
-
     #[error("{:?}", .0)]
     Other(#[from] anyhow::Error),
 
-    #[cfg(feature = "status-tracker")]
-    #[error("pending")]
-    Pending(NetworkItemPendingType),
+    #[error("already downloading")]
+    AlreadyDownloading,
 
-    #[error("already download finished")]
-    AlreadyDownloadFinished,
     #[cfg(feature = "status-tracker")]
-    #[error("status send failed，{:?}", .0)]
-    StatusSendFailed(#[from] SendError<DownloaderStatus>),
+    #[error("Starting")]
+    Starting,
+    #[cfg(feature = "status-tracker")]
+    #[error("Stopping")]
+    Stopping,
 }
 
 #[derive(Error, Debug)]
@@ -77,7 +75,6 @@ pub enum DownloadError {
     #[error("server file already changed")]
     ServerFileAlreadyChanged,
 }
-
 
 #[derive(Error, Debug)]
 pub enum DownloadStopError {
@@ -131,10 +128,7 @@ pub struct HttpFileDownloader {
 }
 
 impl HttpFileDownloader {
-    pub fn new(
-        client: reqwest::Client,
-        config: Box<HttpDownloadConfig>,
-    ) -> Self {
+    pub fn new(client: reqwest::Client, config: Box<HttpDownloadConfig>) -> Self {
         let cancel_token = CancellationToken::new();
         let (downloaded_len_sender, downloaded_len_receiver) = sync::watch::channel::<u64>(0);
         let total_size_semaphore = Arc::new(sync::Semaphore::new(0));
@@ -155,11 +149,16 @@ impl HttpFileDownloader {
         self.downloading_state.read().is_some()
     }
 
-    pub fn change_connection_count(&self, connection_count: NonZeroU8) -> Result<(), ChangeConnectionCountError> {
+    pub fn change_connection_count(
+        &self,
+        connection_count: NonZeroU8,
+    ) -> Result<(), ChangeConnectionCountError> {
         match self.downloading_state.read().as_ref() {
-            None => { Err(ChangeConnectionCountError::NoStart) }
+            None => Err(ChangeConnectionCountError::NoStart),
             Some(r) => match r.download_way.as_ref() {
-                DownloadWay::Single(_) => Err(ChangeConnectionCountError::DownloadTargetNotSupported),
+                DownloadWay::Single(_) => {
+                    Err(ChangeConnectionCountError::DownloadTargetNotSupported)
+                }
                 DownloadWay::Ranges(chunk_manager) => {
                     chunk_manager.change_connection_count(connection_count)?;
                     Ok(())
@@ -169,7 +168,7 @@ impl HttpFileDownloader {
     }
     pub fn change_chunk_size(&self, chunk_size: NonZeroUsize) -> Result<(), ChangeChunkSizeError> {
         match self.downloading_state.read().as_ref() {
-            None => { Err(ChangeChunkSizeError::NoStart) }
+            None => Err(ChangeChunkSizeError::NoStart),
             Some(r) => match r.download_way.as_ref() {
                 DownloadWay::Single(_) => Err(ChangeChunkSizeError::DownloadTargetNotSupported),
                 DownloadWay::Ranges(chunk_manager) => {
@@ -257,24 +256,29 @@ impl HttpFileDownloader {
     }
 
     fn reset(&self) {
-        self.downloaded_len_sender.send(0)
-            .unwrap_or_else(|_err| {
-                #[cfg(feature = "tracing")]
-                error!("send downloaded_len failed! {}", _err);
-            });
+        self.downloaded_len_sender.send(0).unwrap_or_else(|_err| {
+            #[cfg(feature = "tracing")]
+            error!("send downloaded_len failed! {}", _err);
+        });
     }
 
     pub(crate) async fn download(
         self: Arc<Self>,
         params: DownloadParams,
-    ) -> Result<impl Future<Output=Result<DownloadingEndCause, DownloadError>> + 'static, DownloadStartError>
-    {
+    ) -> Result<
+        impl Future<Output=Result<DownloadingEndCause, DownloadError>> + 'static,
+        DownloadStartError,
+    > {
         self.reset();
         if self.is_downloading() {
             return Err(DownloadStartError::AlreadyDownloading);
         }
 
-        let file = tokio::fs::OpenOptions::new().write(true).create(true).open(self.get_file_path()).await?;
+        let file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .open(self.get_file_path())
+            .await?;
         Ok(self.start_download(file, params))
     }
 
@@ -295,9 +299,7 @@ impl HttpFileDownloader {
                 DownloadingEndCause::DownloadFinished => {
                     Err(DownloadStopError::DownloadAlreadyFinished)
                 }
-                DownloadingEndCause::Cancelled => {
-                    Ok(())
-                }
+                DownloadingEndCause::Cancelled => Ok(()),
             }
         } else {
             Err(DownloadStopError::NoStart)
@@ -312,7 +314,9 @@ impl HttpFileDownloader {
         for (header_name, header_value) in self.config.header_map.iter() {
             header_map.insert(header_name, header_value.clone());
         }
-        *request.timeout_mut() = self.config.timeout;
+        // 限速后超时会出现异常
+        *request.timeout_mut() = None;
+        // *request.timeout_mut() = self.config.timeout;
         request
     }
 
@@ -343,7 +347,10 @@ impl HttpFileDownloader {
             if self.config.etag.is_some() {
                 let etag = response.headers().typed_get::<headers::ETag>();
                 if etag == self.config.etag {
-                    error!("current etag: {:?} , target etag:{:?}", self.config.etag, etag);
+                    error!(
+                        "current etag: {:?} , target etag:{:?}",
+                        self.config.etag, etag
+                    );
                     return Err(DownloadError::ServerFileAlreadyChanged);
                 }
                 etag
@@ -351,7 +358,13 @@ impl HttpFileDownloader {
                 None
             }
         };
-        let content_length = response.headers().typed_get::<headers::ContentLength>().map(|n| n.0);
+        let mut content_length = response
+            .headers()
+            .typed_get::<headers::ContentLength>()
+            .map(|n| n.0);
+        if self.config.handle_zero_content {
+            content_length = content_length.and_then(|n| if n == 0 { None } else { Some(n) });
+        }
         let accept_ranges = response.headers().typed_get::<headers::AcceptRanges>();
 
         if let Some(content_length) = content_length {
@@ -360,18 +373,30 @@ impl HttpFileDownloader {
             }
             file.set_len(content_length).await?;
         }
-        self.content_length.store(content_length.unwrap_or(0), Ordering::Relaxed);
+        self.content_length
+            .store(content_length.unwrap_or(0), Ordering::Relaxed);
         self.total_size_semaphore.add_permits(1);
 
         let (end_sender, end_receiver) = sync::oneshot::channel();
 
+        let is_ranges_bytes_none = accept_ranges.is_none();
+        let is_ranges_bytes = !is_ranges_bytes_none && accept_ranges.unwrap() == headers::AcceptRanges::bytes();
         let download_way = {
-            if content_length.is_some() && accept_ranges.is_some() {
+            if content_length.is_some() && (
+                if self.config.strict_check_accept_ranges {
+                    is_ranges_bytes
+                } else {
+                    is_ranges_bytes_none || is_ranges_bytes
+                })
+            {
                 let content_length = content_length.unwrap();
-                let downloading_duration =archive_data.as_ref().map(|n| n.downloading_duration).unwrap_or(0);
+                let downloading_duration = archive_data
+                    .as_ref()
+                    .map(|n| n.downloading_duration)
+                    .unwrap_or(0);
                 let chunk_data = archive_data
                     .and_then(|archive_data| {
-                        tracing::info!("Archive Data: {:?}",archive_data);
+                        // tracing::info!("Archive Data: {:?}",archive_data);
                         self.downloaded_len_sender
                             .send(archive_data.downloaded_len)
                             .unwrap_or_else(|_err| {
@@ -379,10 +404,10 @@ impl HttpFileDownloader {
                                 error!("send downloaded_len failed! {}", _err);
                             });
                         archive_data.chunk_data.map(|mut data| {
-                            if data.remaining.chunk_size != self.config.chunk_size {
+                            if data.remaining.chunk_size != self.config.chunk_size.get() {
                                 #[cfg(feature = "tracing")]
                                 tracing::trace!("ChunkSize Changed!");
-                                data.remaining.chunk_size = self.config.chunk_size;
+                                data.remaining.chunk_size = self.config.chunk_size.get();
                             }
                             data
                         })
@@ -436,10 +461,21 @@ impl HttpFileDownloader {
         let dec = match download_way.as_ref() {
             DownloadWay::Ranges(item) => {
                 let request = Box::new(self.get_download_request());
-                item.start_download(file, request, downloaded_len_change_notify, breakpoint_resume).await?
+                item.start_download(
+                    file,
+                    request,
+                    downloaded_len_change_notify,
+                    breakpoint_resume,
+                )
+                    .await?
             }
             DownloadWay::Single(item) => {
-                item.download(file, Box::new(response), self.config.request_retry_count, downloaded_len_change_notify)
+                item.download(
+                    file,
+                    Box::new(response),
+                    self.config.request_retry_count,
+                    downloaded_len_change_notify,
+                )
                     .await?
             }
         };
@@ -463,7 +499,8 @@ impl DownloadController for HttpFileDownloader {
     async fn download(
         self: Arc<Self>,
         params: DownloadParams,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
+    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
+    {
         Ok(HttpFileDownloader::download(self, params).await?.boxed())
     }
 
@@ -491,16 +528,13 @@ impl ExtensibleHttpFileDownloader {
 
     pub async fn start(
         &self,
-    ) -> Result<impl Future<Output=Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
+    ) -> Result<impl Future<Output=Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
+    {
         let params = DownloadParams::new();
         let controller = self.download_controller.to_owned();
         let future = controller.download(params).await?;
-        let r = tokio::spawn(async move {
-            future.await
-        });
-        Ok(async {
-            r.await?
-        })
+        let r = tokio::spawn(async move { future.await });
+        Ok(async { r.await? })
     }
     pub async fn cancel(&self) -> Result<(), DownloadStopError> {
         self.download_controller.cancel().await?;
@@ -519,9 +553,16 @@ impl ExtensibleHttpFileDownloader {
     }
 
     #[inline]
-    pub fn change_connection_count(&self, connection_count: NonZeroU8) -> Result<(), ChangeConnectionCountError> { self.inner.change_connection_count(connection_count) }
+    pub fn change_connection_count(
+        &self,
+        connection_count: NonZeroU8,
+    ) -> Result<(), ChangeConnectionCountError> {
+        self.inner.change_connection_count(connection_count)
+    }
     #[inline]
-    pub fn change_chunk_size(&self, chunk_size: NonZeroUsize) -> Result<(), ChangeChunkSizeError> { self.inner.change_chunk_size(chunk_size) }
+    pub fn change_chunk_size(&self, chunk_size: NonZeroUsize) -> Result<(), ChangeChunkSizeError> {
+        self.inner.change_chunk_size(chunk_size)
+    }
 
     #[cfg(feature = "async-stream")]
     #[inline]
@@ -546,9 +587,15 @@ impl ExtensibleHttpFileDownloader {
     }
 
     #[inline]
-    pub fn config(&self) -> &HttpDownloadConfig { &self.inner.config }
+    pub fn config(&self) -> &HttpDownloadConfig {
+        &self.inner.config
+    }
     #[inline]
-    pub fn downloaded_len_receiver(&self) -> &sync::watch::Receiver<u64> { &self.inner.downloaded_len_receiver }
+    pub fn downloaded_len_receiver(&self) -> &sync::watch::Receiver<u64> {
+        &self.inner.downloaded_len_receiver
+    }
     #[inline]
-    pub fn downloading_state(&self) -> Option<DownloadingState> { self.inner.downloading_state() }
+    pub fn downloading_state(&self) -> Option<DownloadingState> {
+        self.inner.downloading_state()
+    }
 }
