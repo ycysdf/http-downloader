@@ -23,10 +23,7 @@ async fn main() -> Result<()> {
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 4).unwrap())
             .download_connection_count(NonZeroU8::new(3).unwrap()) // 下载连接数
-            .build((DownloadSpeedLimiterExtension {
-                // byte_count_per: Some(1024 * 1024 * 2),
-                byte_count_per: None,
-            }, DownloadSpeedTrackerExtension {
+            .build((DownloadSpeedLimiterExtension::new(None), DownloadSpeedTrackerExtension {
                 log: true
             }));
     let downloader = Arc::new(downloader);

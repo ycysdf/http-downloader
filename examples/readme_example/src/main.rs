@@ -15,9 +15,6 @@ use http_downloader::{
 };
 use http_downloader::bson_file_archiver::{ArchiveFilePath, BsonFileArchiverBuilder};
 
-
-
-
 #[tokio::main]
 async fn main() -> Result<()> {
     {
@@ -39,9 +36,7 @@ async fn main() -> Result<()> {
                 DownloadSpeedTrackerExtension { log: true },
                 // 下载速度限制扩展，
                 // by cargo feature "speed-limiter" enable
-                DownloadSpeedLimiterExtension {
-                    byte_count_per: None
-                },
+                DownloadSpeedLimiterExtension::new(None),
                 // 断点续传扩展，
                 // by cargo feature "breakpoint-resume" enable
                 DownloadBreakpointResumeExtension {

@@ -25,9 +25,7 @@ async fn main() -> Result<()> {
             .build((
                 DownloadStatusTrackerExtension { log: true }, // 下载状态追踪扩展
                 DownloadSpeedTrackerExtension { log: true }, // 下载速度追踪扩展
-                DownloadSpeedLimiterExtension {  // 下载速度限制扩展
-                    byte_count_per: Some(1024 * 300)
-                },
+                DownloadSpeedLimiterExtension::new(Some(1024 * 300)),
                 DownloadBreakpointResumeExtension { // 断点续传扩展
                     download_archiver_builder: BsonFileArchiverBuilder::new(ArchiveFilePath::Suffix("bson".to_string()))
                 }

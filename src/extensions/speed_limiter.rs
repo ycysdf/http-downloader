@@ -7,33 +7,47 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
-use tokio::sync::RwLock;
 
 use crate::{DownloadController, DownloadedLenChangeNotify, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, HttpFileDownloader};
 
-pub struct DownloadSpeedLimiterExtension {
-    pub byte_count_per: Option<usize>,
+pub struct DownloadSpeedLimiterExtension<Limiter: SpeedLimiter> {
+    limiter: Arc<Limiter>,
+}
+
+impl DownloadSpeedLimiterExtension<DefaultSpeedLimiter> {
+    pub fn new(byte_count_per: Option<usize>) -> Self {
+        Self {
+            limiter: Arc::new(DefaultSpeedLimiter::new(byte_count_per))
+        }
+    }
+}
+impl<Limiter: SpeedLimiter> DownloadSpeedLimiterExtension<Limiter> {
+    pub fn from_limiter(limiter: Arc<Limiter>) -> Self {
+        Self {
+            limiter
+        }
+    }
 }
 
 #[derive(Clone)]
-pub struct DownloadSpeedLimiterState {
-    speed_limiter: Arc<SpeedLimiter>,
+pub struct DownloadSpeedLimiterState<Limiter: SpeedLimiter> {
+    speed_limiter: Arc<Limiter>,
 }
 
-impl DownloadSpeedLimiterState {
+impl<Limiter: SpeedLimiter> DownloadSpeedLimiterState<Limiter> {
     pub async fn change_speed(&self, byte_count_per: Option<usize>) {
         self.speed_limiter.change(byte_count_per).await;
     }
 }
 
-pub struct DownloadSpeedLimiterController<DC: DownloadController> {
+pub struct DownloadSpeedLimiterController<DC: DownloadController, Limiter: SpeedLimiter> {
     inner: Arc<DC>,
-    speed_limiter: Arc<SpeedLimiter>,
+    speed_limiter: Arc<Limiter>,
 }
 
-impl<DC: DownloadController> DownloadExtension<DC> for DownloadSpeedLimiterExtension {
-    type DownloadController = DownloadSpeedLimiterController<DC>;
-    type ExtensionState = DownloadSpeedLimiterState;
+impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadExtension<DC> for DownloadSpeedLimiterExtension<Limiter> {
+    type DownloadController = DownloadSpeedLimiterController<DC, Limiter>;
+    type ExtensionState = DownloadSpeedLimiterState<Limiter>;
 
     fn layer(
         self,
@@ -41,7 +55,7 @@ impl<DC: DownloadController> DownloadExtension<DC> for DownloadSpeedLimiterExten
         inner: Arc<DC>,
     ) -> (Arc<Self::DownloadController>, Self::ExtensionState) {
         drop(downloader);
-        let speed_limiter = Arc::new(SpeedLimiter::new(self.byte_count_per));
+        let speed_limiter = self.limiter;
         (
             Arc::new(DownloadSpeedLimiterController {
                 inner,
@@ -52,15 +66,36 @@ impl<DC: DownloadController> DownloadExtension<DC> for DownloadSpeedLimiterExten
     }
 }
 
-impl DownloadedLenChangeNotify for SpeedLimiter {
+#[async_trait::async_trait]
+pub trait SpeedLimiter: DownloadedLenChangeNotify + 'static {
+    async fn change(&self, byte_count_per: Option<usize>);
+
+    async fn reset(&self);
+}
+
+impl DownloadedLenChangeNotify for DefaultSpeedLimiter {
     #[inline]
     fn receive_len(&self, len: usize) -> Option<BoxFuture<()>> {
         self.wait(len).map(|n| n.boxed())
     }
 }
 
+#[async_trait::async_trait]
+impl SpeedLimiter for DefaultSpeedLimiter {
+    async fn change(&self, byte_count_per: Option<usize>) {
+        self.byte_count_per.store(Self::handle_byte_count_per(byte_count_per), Ordering::Relaxed);
+        self.reset().await;
+    }
+
+    async fn reset(&self) {
+        let mut last_instant = self.last_instant.lock().await;
+        self.cur_read.store(0, Ordering::Relaxed);
+        *last_instant = Instant::now();
+    }
+}
+
 #[derive(Debug)]
-pub struct SpeedLimiter {
+pub struct DefaultSpeedLimiter {
     byte_count_per: AtomicUsize,
     cur_read: AtomicUsize,
     last_instant: tokio::sync::Mutex<Instant>,
@@ -68,7 +103,7 @@ pub struct SpeedLimiter {
 
 const LIMIT_INTERVAL: u64 = 1000;
 
-impl SpeedLimiter {
+impl DefaultSpeedLimiter {
     // 0 表示不限速
     pub fn new(byte_count_per: Option<usize>) -> Self {
         Self {
@@ -82,17 +117,6 @@ impl SpeedLimiter {
 
     fn handle_byte_count_per(byte_count_per: Option<usize>) -> usize {
         byte_count_per.map(|n| ((n as i64) * (LIMIT_INTERVAL as i64 / 1000_i64)) as usize).unwrap_or(0)
-    }
-
-    pub async fn change(&self, byte_count_per: Option<usize>) {
-        self.byte_count_per.store(Self::handle_byte_count_per(byte_count_per), Ordering::Relaxed);
-        self.reset().await;
-    }
-
-    pub async fn reset(&self) {
-        let mut last_instant = self.last_instant.lock().await;
-        self.cur_read.store(0, Ordering::Relaxed);
-        *last_instant = Instant::now();
     }
 
     #[inline]
@@ -124,7 +148,7 @@ impl SpeedLimiter {
 }
 
 #[async_trait]
-impl<DC: DownloadController> DownloadController for DownloadSpeedLimiterController<DC> {
+impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadController for DownloadSpeedLimiterController<DC, Limiter> {
     async fn download(
         self: Arc<Self>,
         mut params: DownloadParams,

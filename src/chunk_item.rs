@@ -37,6 +37,7 @@ pub trait DownloadedLenChangeNotify: Send + Sync {
     fn receive_len(&self, len: usize) -> Option<BoxFuture<()>>;
 }
 
+
 pub struct ChunkItem {
     pub chunk_info: ChunkInfo,
     pub downloaded_len: AtomicU64,
