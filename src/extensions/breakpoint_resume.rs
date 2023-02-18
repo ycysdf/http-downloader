@@ -1,21 +1,21 @@
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
-use tokio::sync::Mutex;
 use tokio::{select, sync};
+use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
     ChunkInfo, ChunkManager, ChunkRange, DownloadArchiveData, DownloadController, DownloadError,
-    DownloadExtension, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay,
-    DownloadingEndCause, HttpDownloadConfig, HttpFileDownloader,
+    DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError,
+    DownloadWay, HttpDownloadConfig, HttpFileDownloader,
 };
 
 pub enum FileSave {
@@ -59,7 +59,7 @@ pub trait DownloadDataArchiver: Send + Sync + 'static {
         download_way: &Arc<DownloadWay>,
         is_resume: bool,
     ) -> Result<(), anyhow::Error>;
-    async fn download_ended<'a>(&'a self,end_info: DownloadEndInfo<'a>);
+    async fn download_ended<'a>(&'a self, end_info: DownloadEndInfo<'a>);
 }
 
 pub trait DownloadDataArchiverBuilder {
@@ -68,7 +68,7 @@ pub trait DownloadDataArchiverBuilder {
 }
 
 impl<DC: DownloadController, T: DownloadDataArchiverBuilder> DownloadExtension<DC>
-    for DownloadBreakpointResumeExtension<T>
+for DownloadBreakpointResumeExtension<T>
 {
     type DownloadController = DownloadBreakpointResumeController<DC, T::DownloadDataArchiver>;
     type ExtensionState = DownloadBreakpointResumeState;
@@ -146,7 +146,7 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadBreakpointResumeCo
 
 #[async_trait]
 impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController
-    for DownloadBreakpointResumeController<DC, T>
+for DownloadBreakpointResumeController<DC, T>
 {
     async fn download(
         self: Arc<Self>,
@@ -223,25 +223,21 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController
                 r = future => {r},
                 r = download_future => {
                     self.download_archiver.download_ended(DownloadEndInfo::DownloadEnd(&r)).await;
-                    if let Ok(r) = r{
-                        match r {
-                            DownloadingEndCause::DownloadFinished => {
-                                // self.download_archiver.download_ended().await;
-                            }
-                            DownloadingEndCause::Cancelled => {
-                                self.save_archive_data(chunk_manager_mutex).await
-                                    .unwrap_or_else(|err| {
-                                        #[cfg(feature = "tracing")]
-                                        tracing::warn!("save_archive_data failed! {:?}",err);
-                                    });
-                            }
+                    match r {
+                        Ok(DownloadingEndCause::Cancelled) | Err(_) => {
+                            self.save_archive_data(chunk_manager_mutex).await
+                                .unwrap_or_else(|err| {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::warn!("save_archive_data failed! {:?}",err);
+                                });
                         }
+                        _ => {}
                     }
                     r
                 }
             }
         }
-        .boxed())
+            .boxed())
     }
 
     async fn cancel(&self) -> Result<(), DownloadStopError> {

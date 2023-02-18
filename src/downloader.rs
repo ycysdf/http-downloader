@@ -475,6 +475,7 @@ impl HttpFileDownloader {
                     Box::new(response),
                     self.config.request_retry_count,
                     downloaded_len_change_notify,
+                    self.config.chunk_size.get()
                 )
                     .await?
             }

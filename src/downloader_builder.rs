@@ -168,7 +168,6 @@ pub trait UrlFileName {
 impl UrlFileName for Url {
     fn file_name(&self) -> Cow<str> {
         let website_default: &'static str = "index.html";
-        tracing::info!("file_name data: {:?}", self);
         self.path_segments()
             .map(|n| {
                 n.last()

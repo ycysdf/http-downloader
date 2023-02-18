@@ -11,7 +11,7 @@ use tokio::sync;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ChunkManager, DownloadedLenChangeNotify, DownloadError, DownloadingEndCause};
+use crate::{ChunkManager, DownloadError, DownloadedLenChangeNotify, DownloadingEndCause};
 
 #[derive(Debug)]
 pub struct SingleDownload {
@@ -29,7 +29,7 @@ impl SingleDownload {
         Self {
             cancel_token,
             downloaded_len_sender,
-            content_length
+            content_length,
         }
     }
 
@@ -39,29 +39,25 @@ impl SingleDownload {
         response: Box<Response>,
         retry_count: u8,
         downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
+        buffer_size: usize,
     ) -> Result<DownloadingEndCause, DownloadError> {
-        let mut chunk_bytes = Vec::with_capacity(1024 * 1024);
         use futures_util::StreamExt;
-        let mut cur_retry_count = 0;
+        let mut chunk_bytes = Vec::with_capacity(buffer_size);
         let future = async {
             let mut stream = response.bytes_stream();
             while let Some(bytes) = stream.next().await {
                 let bytes: Bytes = {
+                    // 因为无法断点续传，所以无法重试
                     match bytes {
-                        Ok(bytes) => { bytes }
+                        Ok(bytes) => bytes,
                         Err(err) => {
-                            cur_retry_count += 1;
-                            #[cfg(feature = "tracing")]
-                            tracing::warn!("Request error! {:?}",err);
-                            if cur_retry_count > retry_count {
-                                return Err(DownloadError::HttpRequestFailed(err));
-                            }
-                            continue;
+                            return Err(DownloadError::HttpRequestFailed(err));
                         }
                     }
                 };
                 let len = bytes.len();
 
+                // 超过缓冲大小就写入磁盘
                 if chunk_bytes.len() + len > chunk_bytes.capacity() {
                     let mut file = file.lock().await;
                     file.write_all(&chunk_bytes).await?;

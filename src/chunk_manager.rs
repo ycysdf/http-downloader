@@ -87,7 +87,7 @@ impl ChunkManager {
         self.download_connection_count_sender.borrow().get()
     }
 
-    fn clone_request(request: &Request) -> Box<Request> {
+    pub fn clone_request(request: &Request) -> Box<Request> {
         let mut req = Request::new(request.method().clone(), request.url().clone());
         *req.headers_mut() = request.headers().clone();
         *req.version_mut() = request.version();
