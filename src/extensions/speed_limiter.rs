@@ -139,7 +139,9 @@ impl DefaultSpeedLimiter {
             }
             let elapsed_millis = last_instant.elapsed();
             if elapsed_millis.as_millis() < LIMIT_INTERVAL as u128 {
-                tokio::time::sleep(Duration::from_millis(LIMIT_INTERVAL) - elapsed_millis).await;
+                let duration = Duration::from_millis(LIMIT_INTERVAL) - elapsed_millis;
+                // tracing::info!("sleep duration:{duration:?}");
+                tokio::time::sleep(duration).await;
             }
             *last_instant = Instant::now();
             self.cur_read.fetch_sub(byte_count_per, Ordering::SeqCst);

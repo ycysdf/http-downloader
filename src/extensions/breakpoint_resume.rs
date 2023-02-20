@@ -71,7 +71,7 @@ impl<DC: DownloadController, T: DownloadDataArchiverBuilder> DownloadExtension<D
 for DownloadBreakpointResumeExtension<T>
 {
     type DownloadController = DownloadBreakpointResumeController<DC, T::DownloadDataArchiver>;
-    type ExtensionState = DownloadBreakpointResumeState;
+    type ExtensionState = DownloadBreakpointResumeState<T::DownloadDataArchiver>;
 
     fn layer(
         self,
@@ -83,18 +83,23 @@ for DownloadBreakpointResumeExtension<T>
         } = self;
 
         let download_archiver = download_archiver_builder.build(&downloader.config);
+        let download_archiver = Arc::new(download_archiver);
         (
             Arc::new(DownloadBreakpointResumeController {
                 inner,
                 // archive_data_sender: sender,
-                download_archiver: Arc::new(download_archiver),
+                download_archiver: download_archiver.clone(),
             }),
-            DownloadBreakpointResumeState {},
+            DownloadBreakpointResumeState {
+                download_archiver,
+            },
         )
     }
 }
 
-pub struct DownloadBreakpointResumeState {}
+pub struct DownloadBreakpointResumeState<T: DownloadDataArchiver> {
+    pub download_archiver: Arc<T>,
+}
 
 pub struct DownloadBreakpointResumeController<DC: DownloadController, T: DownloadDataArchiver> {
     inner: Arc<DC>,

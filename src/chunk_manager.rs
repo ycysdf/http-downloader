@@ -1,18 +1,21 @@
 use std::collections::HashMap;
 use std::num::{NonZeroU8, NonZeroUsize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::Arc;
 
 use reqwest::Request;
-use tokio::{select, sync};
 use tokio::fs::File;
 use tokio::sync::Mutex;
 use tokio::time::Instant;
+use tokio::{select, sync};
 use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::warn;
 
-use crate::{chunk_item::{ChunkItem, ChunkMessageInfo, ChunkMessageKind, DownloadedChunkItem}, ChunkIterator, DownloadError};
+use crate::{
+    chunk_item::{ChunkItem, ChunkMessageInfo, ChunkMessageKind, DownloadedChunkItem},
+    ChunkIterator, DownloadError,
+};
 use crate::{DownloadedLenChangeNotify, DownloadingEndCause};
 
 pub struct ChunkManager {
@@ -48,7 +51,7 @@ impl ChunkManager {
             sync::watch::channel(download_connection_count);
 
         #[cfg(feature = "breakpoint-resume")]
-            let (data_archive_notify, archive_complete_notify) =
+        let (data_archive_notify, archive_complete_notify) =
             (sync::Notify::new(), sync::Notify::new());
 
         Self {
@@ -70,7 +73,10 @@ impl ChunkManager {
         }
     }
 
-    pub fn change_connection_count(&self, connection_count: NonZeroU8) -> Result<(), sync::watch::error::SendError<NonZeroU8>> {
+    pub fn change_connection_count(
+        &self,
+        connection_count: NonZeroU8,
+    ) -> Result<(), sync::watch::error::SendError<NonZeroU8>> {
         self.download_connection_count_sender.send(connection_count)
     }
 
@@ -144,20 +150,23 @@ impl ChunkManager {
             async move {
                 // let mut previous_count = self.connection_count();
                 while download_connection_count_receiver.changed().await.is_ok() {
-                    let download_connection_count = download_connection_count_receiver.borrow().get();
+                    let download_connection_count =
+                        download_connection_count_receiver.borrow().get();
                     let current_count = self.get_chunks().await.len();
                     let diff = download_connection_count as i16 - current_count as i16;
                     if diff >= 0 {
                         self.superfluities_connection_count
                             .store(0, Ordering::SeqCst);
                         for _ in 0..diff {
-                            if !self.download_next_chunk(
-                                file.clone(),
-                                chunk_message_sender.clone(),
-                                downloaded_len_receiver.clone(),
-                                Self::clone_request(&request),
-                            )
-                                .await {
+                            if !self
+                                .download_next_chunk(
+                                    file.clone(),
+                                    chunk_message_sender.clone(),
+                                    downloaded_len_receiver.clone(),
+                                    Self::clone_request(&request),
+                                )
+                                .await
+                            {
                                 break;
                             }
                         }
@@ -207,9 +216,14 @@ impl ChunkManager {
             while let Some(message_info) = chunk_message_receiver.recv().await {
                 match message_info.kind {
                     ChunkMessageKind::DownloadFinished => {
-                        let (downloading_chunk_count, chunk_item) = self.remove_chunk(message_info.chunk_index).await;
-                        let _ = chunk_item.ok_or(DownloadError::ChunkRemoveFailed(message_info.chunk_index))?;
-                        self.downloading_duration.fetch_add(downloading_duration_instant.elapsed().as_secs() as u32, Ordering::Relaxed);
+                        let (downloading_chunk_count, chunk_item) =
+                            self.remove_chunk(message_info.chunk_index).await;
+                        let _ = chunk_item
+                            .ok_or(DownloadError::ChunkRemoveFailed(message_info.chunk_index))?;
+                        self.downloading_duration.fetch_add(
+                            downloading_duration_instant.elapsed().as_secs() as u32,
+                            Ordering::Relaxed,
+                        );
                         downloading_duration_instant = Instant::now();
                         #[cfg(feature = "breakpoint-resume")]
                         {
@@ -221,7 +235,10 @@ impl ChunkManager {
                         }
                         if is_iter_all_chunk {
                             if downloading_chunk_count == 0 {
-                                debug_assert_eq!(self.chunk_iterator.content_length, *self.downloaded_len_sender.borrow());
+                                debug_assert_eq!(
+                                    self.chunk_iterator.content_length,
+                                    *self.downloaded_len_sender.borrow()
+                                );
                                 break;
                             }
                         } else if self.superfluities_connection_count.load(Ordering::SeqCst) == 0 {
@@ -272,7 +289,10 @@ impl ChunkManager {
                 Ok(DownloadingEndCause::Cancelled)
             }
         };
-        self.downloading_duration.fetch_add(downloading_duration_instant.elapsed().as_secs() as u32, Ordering::Relaxed);
+        self.downloading_duration.fetch_add(
+            downloading_duration_instant.elapsed().as_secs() as u32,
+            Ordering::Relaxed,
+        );
         r
     }
     async fn insert_chunk(&self, item: DownloadedChunkItem) {
@@ -281,13 +301,13 @@ impl ChunkManager {
     }
 
     pub async fn get_chunks(&self) -> Vec<Arc<ChunkItem>> {
-        let downloading_chunks = self.downloading_chunks.lock().await;
-        downloading_chunks
+        let mut downloading_chunks:Vec<_> = self.downloading_chunks.lock().await
             .values()
             .map(|n| n.chunk_item.clone())
-            .collect()
+            .collect();
+        downloading_chunks.sort_by(|a, b| a.chunk_info.range.start.cmp(&b.chunk_info.range.start));
+        downloading_chunks
     }
-
     async fn remove_chunk(&self, index: usize) -> (usize, Option<DownloadedChunkItem>) {
         let mut downloading_chunks = self.downloading_chunks.lock().await;
         let removed = downloading_chunks.remove(&index);

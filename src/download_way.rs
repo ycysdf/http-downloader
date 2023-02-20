@@ -37,7 +37,6 @@ impl SingleDownload {
         &self,
         file: Arc<Mutex<File>>,
         response: Box<Response>,
-        retry_count: u8,
         downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
         buffer_size: usize,
     ) -> Result<DownloadingEndCause, DownloadError> {
