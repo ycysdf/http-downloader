@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use anyhow::Result;
 use futures_util::{pin_mut, StreamExt};
-use tracing::info;
 use url::Url;
 
 use http_downloader::HttpDownloaderBuilder;
@@ -75,6 +74,6 @@ async fn main() -> Result<()> {
     });
 
     let dec = finished_future.await?;
-    info!("Downloading end cause: {:?}", dec);
+    tracing::info!("Downloading end cause: {:?}", dec);
     Ok(())
 }

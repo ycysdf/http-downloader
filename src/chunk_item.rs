@@ -16,7 +16,8 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::{instrument, Instrument};
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 
 use crate::{ChunkInfo, ChunkManager, ChunkRange, DownloadError};
 
@@ -93,13 +94,13 @@ impl ChunkItem {
         );
         self.send_message(ChunkMessageKind::DownloadLenAppend(len))
             .await
-            .unwrap_or_else(|err| {
+            .unwrap_or_else(|_err| {
                 #[cfg(feature = "tracing")]
-                tracing::warn!("ChunkMessageInfoSendFailed! {:?}", err);
+                tracing::warn!("ChunkMessageInfoSendFailed! {:?}", _err);
             });
     }
 
-    #[instrument(name="download chunk",skip_all,fields(chunk_index = self.chunk_info.index))]
+    #[cfg_attr(feature = "tracing",tracing::instrument(name="download chunk",skip_all,fields(chunk_index = self.chunk_info.index)))]
     async fn download_chunk(
         self: Arc<Self>,
         mut request: Box<Request>,
@@ -116,19 +117,23 @@ impl ChunkItem {
                         .to_range_header(),
                 );
                 // 避免 clone request ?
-                let response = self.client.execute(*ChunkManager::clone_request(&request))
-                    .instrument(tracing::info_span!("chunk's http request"))
-                    .await?;
+                let response = self.client.execute(*ChunkManager::clone_request(&request));
+                #[cfg(feature = "tracing")]
+                let response = response.instrument(tracing::info_span!("chunk's http request"));
+                let response = response.await?;
                 if self.etag.is_some() {
                     let etag = response.headers().typed_get::<headers::ETag>();
                     if etag != self.etag {
+                        #[cfg(feature = "tracing")]
                         tracing::error!("current etag: {:?} , target etag:{:?}", self.etag, etag);
                         return Err(DownloadError::ServerFileAlreadyChanged);
                     }
                 }
                 let mut stream = response.bytes_stream();
                 while let Some(bytes) = stream.next().await {
+                    #[cfg(feature = "tracing")]
                     let span = tracing::info_span!("process received bytes",is_ok = bytes.is_ok());
+                    #[cfg(feature = "tracing")]
                     let _ = span.enter();
                     let bytes: Bytes = {
                         match bytes {
@@ -217,18 +222,18 @@ impl ChunkItem {
                         if is_finished {
                             self.send_message(ChunkMessageKind::DownloadFinished)
                                 .await
-                                .unwrap_or_else(|err| {
+                                .unwrap_or_else(|_err| {
                                     #[cfg(feature = "tracing")]
-                                    tracing::warn!("ChunkMessageInfoSendFailed! {:?}", err);
+                                    tracing::warn!("ChunkMessageInfoSendFailed! {:?}", _err);
                                 })
                         }
                     }
                     Err(err) => self
                         .send_message(ChunkMessageKind::Error(err))
                         .await
-                        .unwrap_or_else(|err| {
+                        .unwrap_or_else(|_err| {
                             #[cfg(feature = "tracing")]
-                            tracing::warn!("ChunkMessageInfoSendFailed! {:?}", err);
+                            tracing::warn!("ChunkMessageInfoSendFailed! {:?}", _err);
                         }),
                 };
             },

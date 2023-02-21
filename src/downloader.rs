@@ -2,8 +2,8 @@ use std::future::Future;
 use std::io::SeekFrom;
 use std::num::{NonZeroU64, NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -11,26 +11,23 @@ use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
+#[cfg(feature = "tracing")]
+use tracing::Instrument;
 use headers::{HeaderMapExt, HeaderValue};
 use parking_lot::RwLock;
 use reqwest::header;
 use thiserror::Error;
+use tokio::{io, sync};
 use tokio::fs::File;
 use tokio::io::AsyncSeekExt;
-use tokio::sync::watch::error::SendError;
 use tokio::sync::Mutex;
+use tokio::sync::watch::error::SendError;
 use tokio::task::JoinError;
-use tokio::{io, sync};
 use tokio_util::sync::CancellationToken;
-#[cfg(feature = "tracing")]
-use tracing::{error, info_span, warn, Instrument};
 
+use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadController, DownloadParams, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
 #[cfg(feature = "status-tracker")]
 use crate::status_tracker::DownloaderStatus;
-use crate::{
-    ChunkData, ChunkItem, ChunkIterator, ChunkManager, DownloadController, DownloadParams,
-    DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload,
-};
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum DownloadingEndCause {
@@ -180,7 +177,7 @@ impl HttpFileDownloader {
     }
 
     #[cfg(feature = "async-stream")]
-    pub async fn downloaded_len_stream(&self) -> impl Stream<Item = u64> {
+    pub async fn downloaded_len_stream(&self) -> impl Stream<Item=u64> {
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
         let duration = self.config.downloaded_len_send_interval.clone();
         async_stream::stream! {
@@ -197,7 +194,7 @@ impl HttpFileDownloader {
     }
 
     #[cfg(feature = "async-stream")]
-    pub async fn chunks_stream(&self) -> Option<impl Stream<Item = Vec<Arc<ChunkItem>>>> {
+    pub async fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>>> {
         match self.downloading_state.read().as_ref() {
             None => {
                 // tracing::info!("downloading_state is null!");
@@ -226,6 +223,36 @@ impl HttpFileDownloader {
         }
     }
 
+    #[cfg(feature = "async-stream")]
+    pub async fn chunks_info_stream(&self) -> Option<impl Stream<Item=ChunksInfo>> {
+        match self.downloading_state.read().as_ref() {
+            None => {
+                // tracing::info!("downloading_state is null!");
+                None
+            }
+            Some(r) => match r.download_way.as_ref() {
+                DownloadWay::Single(_) => {
+                    // tracing::info!("DownloadWay is Single!");
+                    None
+                }
+                DownloadWay::Ranges(chunk_manager) => {
+                    let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
+                    let chunk_manager = chunk_manager.to_owned();
+                    let duration = self.config.chunks_send_interval.clone();
+                    Some(async_stream::stream! {
+                          yield chunk_manager.get_chunks_info().await;
+                          while downloaded_len_receiver.changed().await.is_ok() {
+                              yield chunk_manager.get_chunks_info().await;
+                              if let Some(duration) = duration {
+                                 tokio::time::sleep(duration).await;
+                              }
+                          }
+                    })
+                }
+            },
+        }
+    }
+
     pub fn downloaded_len(&self) -> u64 {
         *self.downloaded_len_receiver.borrow()
     }
@@ -240,20 +267,28 @@ impl HttpFileDownloader {
         }
     }
 
+    pub fn get_chunk_manager(&self) -> Option<Arc<ChunkManager>> {
+        let guard = self.downloading_state.read();
+        guard.as_ref().and_then(|r| {
+            if let DownloadWay::Ranges(item) = r.download_way.as_ref() {
+                Some(item.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     pub async fn get_chunks(&self) -> Vec<Arc<ChunkItem>> {
-        let chunk_manager = {
-            let guard = self.downloading_state.read();
-            guard.as_ref().and_then(|r| {
-                if let DownloadWay::Ranges(item) = r.download_way.as_ref() {
-                    Some(item.clone())
-                } else {
-                    None
-                }
-            })
-        };
-        match chunk_manager {
+        match self.get_chunk_manager() {
             None => Vec::new(),
             Some(n) => n.get_chunks().await,
+        }
+    }
+
+    pub async fn get_chunks_info(&self) -> Option<ChunksInfo> {
+        match self.get_chunk_manager() {
+            None => None,
+            Some(n) => Some(n.get_chunks_info().await)
         }
     }
 
@@ -264,7 +299,7 @@ impl HttpFileDownloader {
     fn reset(&self) {
         self.downloaded_len_sender.send(0).unwrap_or_else(|_err| {
             #[cfg(feature = "tracing")]
-            error!("send downloaded_len failed! {}", _err);
+            tracing::error!("send downloaded_len failed! {}", _err);
         });
     }
 
@@ -272,7 +307,7 @@ impl HttpFileDownloader {
         self: Arc<Self>,
         params: DownloadParams,
     ) -> Result<
-        impl Future<Output = Result<DownloadingEndCause, DownloadError>> + 'static,
+        impl Future<Output=Result<DownloadingEndCause, DownloadError>> + 'static,
         DownloadStartError,
     > {
         self.reset();
@@ -343,7 +378,7 @@ impl HttpFileDownloader {
         let request = self.get_download_request();
         let response = self.client.execute(request);
         #[cfg(feature = "tracing")]
-        let response = response.instrument(info_span!("request for content_length"));
+        let response = response.instrument(tracing::info_span!("request for content_length"));
         let response = response.await;
         if response.is_err() {
             self.total_size_semaphore.add_permits(1);
@@ -353,7 +388,8 @@ impl HttpFileDownloader {
             if self.config.etag.is_some() {
                 let etag = response.headers().typed_get::<headers::ETag>();
                 if etag == self.config.etag {
-                    error!(
+                    #[cfg(feature = "tracing")]
+                    tracing::error!(
                         "current etag: {:?} , target etag:{:?}",
                         self.config.etag, etag
                     );
@@ -391,10 +427,10 @@ impl HttpFileDownloader {
         let download_way = {
             if content_length.is_some()
                 && (if self.config.strict_check_accept_ranges {
-                    is_ranges_bytes
-                } else {
-                    is_ranges_bytes_none || is_ranges_bytes
-                })
+                is_ranges_bytes
+            } else {
+                is_ranges_bytes_none || is_ranges_bytes
+            })
             {
                 let content_length = content_length.unwrap();
                 let downloading_duration = archive_data
@@ -408,14 +444,10 @@ impl HttpFileDownloader {
                             .send(archive_data.downloaded_len)
                             .unwrap_or_else(|_err| {
                                 #[cfg(feature = "tracing")]
-                                error!("send downloaded_len failed! {}", _err);
+                                tracing::error!("send downloaded_len failed! {}", _err);
                             });
                         archive_data.chunk_data.map(|mut data| {
-                            if data.remaining.chunk_size != self.config.chunk_size.get() {
-                                #[cfg(feature = "tracing")]
-                                tracing::trace!("ChunkSize Changed!");
-                                data.remaining.chunk_size = self.config.chunk_size.get();
-                            }
+                            data.remaining.chunk_size = self.config.chunk_size.get();
                             data
                         })
                     })
@@ -461,7 +493,7 @@ impl HttpFileDownloader {
         for oneshot in download_way_oneshot_vec {
             oneshot.send(download_way.clone()).unwrap_or_else(|_| {
                 #[cfg(feature = "tracing")]
-                error!("send download_way failed!");
+                tracing::error!("send download_way failed!");
             });
         }
 
@@ -474,7 +506,7 @@ impl HttpFileDownloader {
                     downloaded_len_change_notify,
                     breakpoint_resume,
                 )
-                .await?
+                    .await?
             }
             DownloadWay::Single(item) => {
                 item.download(
@@ -483,14 +515,14 @@ impl HttpFileDownloader {
                     downloaded_len_change_notify,
                     self.config.chunk_size.get(),
                 )
-                .await?
+                    .await?
             }
         };
         self.reset();
 
-        end_sender.send(dec).map_err(|err| {
+        end_sender.send(dec).map_err(|_err| {
             #[cfg(feature = "tracing")]
-            warn!("DownloadingEndCause Send Failed! {:?}", err);
+            tracing::warn!("DownloadingEndCause Send Failed! {:?}", _err);
             anyhow::Error::msg("DownloadingEndCause Send Failed")
         })?;
         {
@@ -536,7 +568,7 @@ impl ExtensibleHttpFileDownloader {
 
     pub async fn start(
         &self,
-    ) -> Result<impl Future<Output = Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
+    ) -> Result<impl Future<Output=Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
     {
         let params = DownloadParams::new();
         let controller = self.download_controller.to_owned();
@@ -556,7 +588,7 @@ impl ExtensibleHttpFileDownloader {
 
     #[cfg(feature = "async-stream")]
     #[inline]
-    pub async fn downloaded_len_stream(&self) -> impl Stream<Item = u64> {
+    pub async fn downloaded_len_stream(&self) -> impl Stream<Item=u64> {
         self.inner.downloaded_len_stream().await
     }
 
@@ -574,7 +606,7 @@ impl ExtensibleHttpFileDownloader {
 
     #[cfg(feature = "async-stream")]
     #[inline]
-    pub async fn chunks_stream(&self) -> Option<impl Stream<Item = Vec<Arc<ChunkItem>>>> {
+    pub async fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>>> {
         self.inner.chunks_stream().await
     }
     #[inline]

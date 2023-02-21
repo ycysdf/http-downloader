@@ -34,7 +34,7 @@ enum ChunkHandle {
 impl RemainingChunks {
     pub fn new(chunk_size: NonZeroUsize, total_len: u64) -> Self {
         Self {
-            chunk_size:chunk_size.get(),
+            chunk_size: chunk_size.get(),
             ranges: vec![ChunkRange::from_len(0, total_len)],
         }
     }
@@ -144,6 +144,10 @@ impl ChunkData {
         len
     }
 
+    pub fn no_chunk_remaining(&self) -> bool {
+        self.remaining.ranges.is_empty()
+    }
+
     pub fn next_chunk_range(&mut self) -> Option<ChunkInfo> {
         if let Some(chunk) = self.last_incomplete_chunks.pop() {
             return Some(chunk);
@@ -165,20 +169,20 @@ impl ChunkData {
 #[derive(Debug)]
 pub struct ChunkIterator {
     pub content_length: u64,
-    pub data: Arc<parking_lot::Mutex<ChunkData>>,
+    pub data: Arc<parking_lot::RwLock<ChunkData>>,
 }
 
 impl ChunkIterator {
     pub fn new(content_length: u64, data: ChunkData) -> Self {
         Self {
             content_length,
-            data: Arc::new(parking_lot::Mutex::new(data)),
+            data: Arc::new(parking_lot::RwLock::new(data)),
         }
     }
 
 
     pub fn next(&self) -> Option<ChunkInfo> {
-        let mut data = self.data.lock();
+        let mut data = self.data.write();
         data.next_chunk_range()
     }
 }
@@ -224,7 +228,6 @@ impl ChunkRange {
             end: start + len - 1,
         }
     }
-
 }
 
 impl<'a> RangeBounds<u64> for &'a ChunkRange {

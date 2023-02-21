@@ -8,7 +8,6 @@ use futures_util::FutureExt;
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
 use tokio::{select, sync};
-use tracing::info;
 
 use crate::{DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay, HttpFileDownloader};
 
@@ -117,9 +116,9 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionContro
                     if log {
                         let value = value as f64 / 1024_f64;
                         if value > 1024_f64 {
-                            info!("Download speed: {:.2} Mb/s", value / 1024_f64);
+                            tracing::info!("Download speed: {:.2} Mb/s", value / 1024_f64);
                         } else {
-                            info!("Download speed: {:.2} Kb/s", value);
+                            tracing::info!("Download speed: {:.2} Kb/s", value);
                         }
                     }
                     let _ = downloaded_len_sender.send(value);

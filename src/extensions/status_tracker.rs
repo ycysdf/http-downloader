@@ -5,8 +5,6 @@ use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
-#[cfg(feature = "tracing")]
-use tracing::{error, info};
 
 use crate::{DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, HttpFileDownloader};
 
@@ -45,11 +43,11 @@ impl DownloadStatusSender {
     pub fn change_status(&self, status: DownloaderStatus) {
         #[cfg(feature = "tracing")]
         if self.log {
-            info!("Status changed {:?}", &status);
+            tracing::info!("Status changed {:?}", &status);
         }
         self.status_sender.send(status).unwrap_or_else(|err| {
             #[cfg(feature = "tracing")]
-            error!("Send download status failed! {:?}", err);
+            tracing::error!("Send download status failed! {:?}", err);
         });
     }
 }
