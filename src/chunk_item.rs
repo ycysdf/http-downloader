@@ -16,6 +16,7 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
+use tracing::{instrument, Instrument};
 
 use crate::{ChunkInfo, ChunkManager, ChunkRange, DownloadError};
 
@@ -98,6 +99,7 @@ impl ChunkItem {
             });
     }
 
+    #[instrument(name="download chunk",skip_all,fields(chunk_index = self.chunk_info.index))]
     async fn download_chunk(
         self: Arc<Self>,
         mut request: Box<Request>,
@@ -114,7 +116,9 @@ impl ChunkItem {
                         .to_range_header(),
                 );
                 // 避免 clone request ?
-                let response = self.client.execute(*ChunkManager::clone_request(&request)).await?;
+                let response = self.client.execute(*ChunkManager::clone_request(&request))
+                    .instrument(tracing::info_span!("chunk's http request"))
+                    .await?;
                 if self.etag.is_some() {
                     let etag = response.headers().typed_get::<headers::ETag>();
                     if etag != self.etag {
@@ -124,6 +128,8 @@ impl ChunkItem {
                 }
                 let mut stream = response.bytes_stream();
                 while let Some(bytes) = stream.next().await {
+                    let span = tracing::info_span!("process received bytes",is_ok = bytes.is_ok());
+                    let _ = span.enter();
                     let bytes: Bytes = {
                         match bytes {
                             Ok(bytes) => {
@@ -202,6 +208,7 @@ impl ChunkItem {
         retry_count: u8,
     ) -> DownloadedChunkItem {
         use futures_util::FutureExt;
+
         let chunk_item = self.clone();
         let join_handle = tokio::spawn(self.clone().download_chunk(request, retry_count).then(
             |result| async move {

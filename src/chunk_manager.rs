@@ -9,6 +9,7 @@ use tokio::sync::Mutex;
 use tokio::time::Instant;
 use tokio::{select, sync};
 use tokio_util::sync::CancellationToken;
+use tracing::{instrument};
 #[cfg(feature = "tracing")]
 use tracing::warn;
 
@@ -148,7 +149,6 @@ impl ChunkManager {
             let downloaded_len_receiver = downloaded_len_receiver.clone();
             let request = Self::clone_request(&request);
             async move {
-                // let mut previous_count = self.connection_count();
                 while download_connection_count_receiver.changed().await.is_ok() {
                     let download_connection_count =
                         download_connection_count_receiver.borrow().get();
@@ -174,38 +174,6 @@ impl ChunkManager {
                         self.superfluities_connection_count
                             .store(diff.unsigned_abs() as u8, Ordering::SeqCst);
                     }
-
-                    // let cc = self.superfluities_connection_count.load(Ordering::SeqCst);
-                    // let mut add_connection_count = current as i16 - previous_count as i16;
-                    // previous_count = current;
-                    // if add_connection_count > 0 {
-                    //     if cc > 0 {
-                    //         let d = add_connection_count - (cc as i16);
-                    //         if d >= 0 {
-                    //             add_connection_count = d;
-                    //         } else {
-                    //             info!("add_connection_count sub {}",add_connection_count);
-                    //
-                    //             self.superfluities_connection_count
-                    //                 .fetch_sub(add_connection_count as u8, Ordering::SeqCst);
-                    //         }
-                    //     }
-                    //     for _ in 0..add_connection_count {
-                    //         info!("add_connection_count {}",add_connection_count);
-                    //         self.download_next_chunk(
-                    //             file.clone(),
-                    //             chunk_message_sender.clone(),
-                    //             downloaded_len_receiver.clone(),
-                    //             Self::clone_request(&request),
-                    //         )
-                    //             .await;
-                    //     }
-                    // } else {
-                    //     info!("add_connection_count.unsigned_abs() {}",add_connection_count.unsigned_abs());
-                    //     self.superfluities_connection_count
-                    //         .fetch_add(add_connection_count.unsigned_abs() as u8, Ordering::SeqCst);
-                    // }
-                    // info!("self.superfluities_connection_count {}",self.superfluities_connection_count.load(Ordering::SeqCst));
                 }
                 DownloadingEndCause::Cancelled
             }
@@ -216,6 +184,8 @@ impl ChunkManager {
             while let Some(message_info) = chunk_message_receiver.recv().await {
                 match message_info.kind {
                     ChunkMessageKind::DownloadFinished => {
+                        let span = tracing::info_span!("Start Handle DownloadFinished",chunk_inde = message_info.chunk_index);
+                        let _ = span.enter();
                         let (downloading_chunk_count, chunk_item) =
                             self.remove_chunk(message_info.chunk_index).await;
                         let _ = chunk_item
@@ -228,6 +198,8 @@ impl ChunkManager {
                         #[cfg(feature = "breakpoint-resume")]
                         {
                             if breakpoint_resume {
+                                let span = tracing::info_span!("Archive Data");
+                                let _ = span.enter();
                                 let notified = self.archive_complete_notify.notified();
                                 self.data_archive_notify.notify_one();
                                 notified.await;
@@ -256,21 +228,9 @@ impl ChunkManager {
                         }
                     }
                     ChunkMessageKind::Error(err) => {
-                        // if let DownloadError::HttpRequestFailed(_) = err {
-                        //     warn!("Request error! {:?}",err);
-                        //     if !self.restart_chunk(message_info.chunk_index, true, Self::clone_request(&request)).await? {
-                        //         return Err(err);
-                        //     }
-                        // }
                         return Err(err);
                     }
                     ChunkMessageKind::DownloadCancelled => {
-                        // // 如果取消的是单个 Chunk，则重新下载此 Chunk
-                        // if !self.cancel_token.is_cancelled() {
-                        //     self.restart_chunk(message_info.chunk_index, false, Self::clone_request(&request)).await?;
-                        // } else {
-                        //     return Result::<DownloadingEndCause, DownloadError>::Ok(DownloadingEndCause::Cancelled);
-                        // }
                     }
                     ChunkMessageKind::DownloadLenAppend(append_len) => {
                         self.downloaded_len_sender
@@ -314,29 +274,7 @@ impl ChunkManager {
         (downloading_chunks.len(), removed)
     }
 
-    /*    async fn restart_chunk(&self, index: usize, error_retry: bool, request: Box<Request>) -> Result<bool, DownloadError> {
-            if let Some(DownloadedChunkItem { chunk_item, .. }) = self.remove_chunk(index).await.1 {
-                let retry_count = chunk_item.retry_count.load(Ordering::Relaxed);
-                if !error_retry || retry_count < self.retry_count {
-                    let item = chunk_item.start_download(request,);
-                    item.chunk_item.retry_count.store(
-                        if error_retry {
-                            retry_count + 1
-                        } else {
-                            retry_count
-                        },
-                        Ordering::Relaxed,
-                    );
-                    self.insert_chunk(item).await;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            } else {
-                Err(DownloadError::ChunkRemoveFailed(index))
-            }
-        }
-    */
+    #[instrument(skip_all)]
     async fn download_next_chunk(
         &self,
         file: Arc<Mutex<File>>,

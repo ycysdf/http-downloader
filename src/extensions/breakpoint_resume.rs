@@ -114,7 +114,10 @@ impl<DC: DownloadController, T: DownloadDataArchiver> DownloadBreakpointResumeCo
         let archive_data = {
             let chunk_manager = chunk_manager_mutex.lock().await;
             if let Some(chunk_manager) = chunk_manager.as_ref() {
-                let mut data = chunk_manager.chunk_iterator.data.lock().clone();
+                let mut data = {
+                    let data = chunk_manager.chunk_iterator.data.lock();
+                    data.clone()
+                };
                 data.last_incomplete_chunks.extend(
                     chunk_manager.get_chunks().await.iter().filter_map(|n| {
                         let downloaded_len = n.downloaded_len.load(Ordering::SeqCst);
@@ -194,7 +197,10 @@ for DownloadBreakpointResumeController<DC, T>
                     loop {
                         notified.await;
 
-                        let mut data = chunk_manager.chunk_iterator.data.lock().clone();
+                        let mut data = {
+                            let data = chunk_manager.chunk_iterator.data.lock();
+                            data.clone()
+                        };
                         data.last_incomplete_chunks.extend(
                             chunk_manager
                                 .get_chunks()

@@ -24,7 +24,11 @@
 
 ## 一个简单的 Http 下载器
 
-我最近在做一个下载器软件，便把 Http 下载部分单独抽出来进行了开源
+我最近在做一个下载器软件，便把 Http 下载部分单独抽出来进行了开源，只要我还在继续做下载器，这个库就将持续更新
+
+库属于可能存在没发现的bug，目前没有写单元测试
+
+欢迎贡献代码
 
 ## 功能：
 
@@ -32,11 +36,34 @@
 - 断点续传
 - 下载速度限制
 - 下载速度追踪
-- 通过扩展去增加功能
+- 在下载时修改
+  - 下载并行连接数
+  - 速度限制
+  - 下载块大小
 
-也支持动态去修改下载连接数、下载速度限制大小等
+## cargo futures
 
-一些功能是通过扩展去添加的，比如：断点续传、下载速度限制、下载速度追踪、状态追踪等
+一些功能默认没有开启，如需开启，请设置 cargo features
+
+```toml
+[features]
+# 默认开启 tokio tracing
+default = ["tracing"]
+# 一些类型作为 async-graphql 输入或者输出对象
+async-graphql = ["dep:async-graphql"]
+# 全部扩展
+all-extensions = ["status-tracker", "speed-limiter", "speed-tracker", "breakpoint-resume", "tracing", "bson-file-archiver"]
+# 下载状态追踪
+status-tracker = ["tracing"]
+# 下载速度追踪
+speed-tracker = ["tracing"]
+# 下载速度限制
+speed-limiter = ["tracing"]
+# 断点续传
+breakpoint-resume = ["tracing"]
+# 断点续传，文件存储器
+bson-file-archiver = ["breakpoint-resume", "tracing", "serde", "bson", "url/serde"]
+```
 
 ## 最少需要添加以下依赖
 
@@ -48,9 +75,9 @@ tokio = { version = "1", features = ["rt", "macros"] }
 
 ## 终端 UI
 
-有一个简单的终端 UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
+使用此库做的一个，简单的终端 UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
 
-## 示例
+## 简单用例
 
 通过 `HttpDownloaderBuilder` `build` 函数参数去设置需要添加的扩展，需要传入一个元组，元组的成员就是扩展
 
@@ -59,7 +86,6 @@ tokio = { version = "1", features = ["rt", "macros"] }
 例如 `DownloadSpeedTrackerExtension` 扩展，就对应 `DownloadSpeedTrackerState` 状态
 
 通过`DownloadSpeedTrackerState` 的  `reciver` 成员就可以去监听下载速度，或者通过 `download_speed`函数直接去获取下载速度
-
 
 
 ```rust

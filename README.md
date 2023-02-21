@@ -29,7 +29,10 @@
 - Breakpoint resume
 - Download speed limit
 - Download speed tracking
-- Add functionality through extensions
+- Modify at download time 
+  - max parallel connection count
+  - max download speed
+  - chunk size
 
 ## Required minimum dependency
 
@@ -42,6 +45,30 @@ tokio = { version = "1", features = ["rt", "macros"] }
 ## A simple http downloader
 
 terminal ui：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
+
+## cargo futures
+
+Some features are not enabled by default
+
+```toml
+[features]
+# tokio tracing
+default = ["tracing"]
+# async-graphql input or output objects
+async-graphql = ["dep:async-graphql"]
+# all extensions
+all-extensions = ["status-tracker", "speed-limiter", "speed-tracker", "breakpoint-resume", "tracing", "bson-file-archiver"]
+# download status tracking
+status-tracker = ["tracing"]
+# download speed tracing
+speed-tracker = ["tracing"]
+# download speed limit
+speed-limiter = ["tracing"]
+# download breakpoint resume
+breakpoint-resume = ["tracing"]
+# download breakpoint resume，bson file storage
+bson-file-archiver = ["breakpoint-resume", "tracing", "serde", "bson", "url/serde"]
+```
 
 ## Example
 

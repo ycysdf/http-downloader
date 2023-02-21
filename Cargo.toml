@@ -46,11 +46,19 @@ tracing = { version = "0.1" }
 
 
 [features]
+# 默认开启 tokio tracing
 default = ["tracing"]
+# 一些类型作为 async-graphql 输入或者输出对象
 async-graphql = ["dep:async-graphql"]
+# 全部扩展
 all-extensions = ["status-tracker", "speed-limiter", "speed-tracker", "breakpoint-resume", "tracing", "bson-file-archiver"]
+# 下载状态追踪
 status-tracker = ["tracing"]
+# 下载速度追踪
 speed-tracker = ["tracing"]
+# 下载速度限制
 speed-limiter = ["tracing"]
+# 断点续传
 breakpoint-resume = ["tracing"]
+# 断点续传，文件存储器
 bson-file-archiver = ["breakpoint-resume", "tracing", "serde", "bson", "url/serde"]
