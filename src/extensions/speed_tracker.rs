@@ -126,11 +126,15 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionContro
                 }
             }
         };
+        let downloaded_len_sender = self.download_speed_sender.clone();
 
         Ok(async move {
             select! {
                 r = future => {r},
-                r = download_future => {r}
+                r = download_future => {
+                    let _ = downloaded_len_sender.send(0);
+                    r
+                }
             }
         }.boxed())
     }

@@ -539,8 +539,6 @@ impl HttpFileDownloader {
             }
         };
 
-        self.reset();
-
         end_sender.send(dec).map_err(|_err| {
             #[cfg(feature = "tracing")]
             tracing::warn!("DownloadingEndCause Send Failed! {:?}", _err);
