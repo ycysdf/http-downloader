@@ -196,12 +196,21 @@ pub struct ChunkInfo {
 }
 
 // like RangeInclusive
-#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject))]
+#[cfg_attr(feature = "async-graphql", derive(async_graphql::SimpleObject),graphql(complex))]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Copy, Clone)]
 pub struct ChunkRange {
     pub start: u64,
     pub end: u64,
+}
+
+#[cfg(feature = "async-graphql")]
+#[async_graphql::ComplexObject]
+impl ChunkRange {
+    #[graphql(name = "len")]
+    async fn get_len(&self)-> u64{
+        self.len()
+    }
 }
 
 impl ChunkRange {

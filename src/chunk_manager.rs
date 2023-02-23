@@ -1,23 +1,73 @@
 use std::collections::HashMap;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use reqwest::Request;
 use tokio::{select, sync};
 use tokio::fs::File;
 use tokio::sync::Mutex;
-use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
-use crate::{chunk_item::{ChunkItem, ChunkMessageInfo, ChunkMessageKind, DownloadedChunkItem}, ChunkIterator, ChunkRange, DownloadError};
+use crate::{
+    chunk_item::{ChunkItem, ChunkMessageInfo, ChunkMessageKind, DownloadedChunkItem},
+    ChunkIterator, ChunkRange, DownloadError,
+};
 use crate::{DownloadedLenChangeNotify, DownloadingEndCause};
 
 #[allow(dead_code)]
+#[cfg_attr(
+feature = "async-graphql",
+derive(async_graphql::SimpleObject),
+graphql(complex)
+)]
 pub struct ChunksInfo {
     finished_chunks: Vec<ChunkRange>,
+    #[cfg_attr(feature = "async-graphql", graphql(skip))]
     downloading_chunks: Vec<Arc<ChunkItem>>,
     no_chunk_remaining: bool,
+}
+
+#[cfg(feature = "async-graphql")]
+pub struct DownloadChunkObject(pub Arc<ChunkItem>);
+
+#[cfg(feature = "async-graphql")]
+impl From<Arc<ChunkItem>> for DownloadChunkObject {
+    fn from(value: Arc<ChunkItem>) -> Self {
+        DownloadChunkObject(value)
+    }
+}
+
+#[cfg(feature = "async-graphql")]
+#[async_graphql::Object]
+impl DownloadChunkObject {
+    pub async fn index(&self) -> usize {
+        self.0.chunk_info.index
+    }
+    pub async fn start(&self) -> u64 {
+        self.0.chunk_info.range.start
+    }
+    pub async fn end(&self) -> u64 {
+        self.0.chunk_info.range.end
+    }
+    pub async fn len(&self) -> u64 {
+        self.0.chunk_info.range.len()
+    }
+    pub async fn downloaded_len(&self) -> u64 {
+        self.0.downloaded_len.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg_attr(feature = "async-graphql", async_graphql::ComplexObject)]
+impl ChunksInfo {
+    #[cfg(feature = "async-graphql")]
+    pub async fn downloading_chunks(&self) -> Vec<DownloadChunkObject> {
+        self.downloading_chunks
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
+    }
 }
 
 pub struct ChunkManager {
@@ -35,7 +85,6 @@ pub struct ChunkManager {
     pub superfluities_connection_count: AtomicU8,
     pub etag: Option<headers::ETag>,
     pub retry_count: u8,
-    pub downloading_duration: AtomicU32,
 }
 
 impl ChunkManager {
@@ -48,7 +97,6 @@ impl ChunkManager {
         chunk_iterator: ChunkIterator,
         etag: Option<headers::ETag>,
         retry_count: u8,
-        downloading_duration: u32,
     ) -> Self {
         let (download_connection_count_sender, download_connection_count_receiver) =
             sync::watch::channel(download_connection_count);
@@ -72,7 +120,6 @@ impl ChunkManager {
             superfluities_connection_count: AtomicU8::new(0),
             etag,
             retry_count,
-            downloading_duration: AtomicU32::new(downloading_duration),
         }
     }
 
@@ -113,7 +160,6 @@ impl ChunkManager {
     ) -> Result<DownloadingEndCause, DownloadError> {
         let (chunk_message_sender, mut chunk_message_receiver) =
             sync::mpsc::channel::<ChunkMessageInfo>(64);
-        let mut downloading_duration_instant = Instant::now();
 
         let mut is_iter_all_chunk = !self
             .download_next_chunk(
@@ -187,29 +233,18 @@ impl ChunkManager {
                 match message_info.kind {
                     ChunkMessageKind::DownloadFinished => {
                         #[cfg(feature = "tracing")]
-                        let span = tracing::info_span!("Start Handle DownloadFinished",chunk_inde = message_info.chunk_index);
+                            let span = tracing::info_span!(
+                            "Start Handle DownloadFinished",
+                            chunk_inde = message_info.chunk_index
+                        );
                         #[cfg(feature = "tracing")]
-                        let _ = span.enter();
+                            let _ = span.enter();
                         let (downloading_chunk_count, chunk_item) =
                             self.remove_chunk(message_info.chunk_index).await;
                         let _ = chunk_item
                             .ok_or(DownloadError::ChunkRemoveFailed(message_info.chunk_index))?;
-                        self.downloading_duration.fetch_add(
-                            downloading_duration_instant.elapsed().as_secs() as u32,
-                            Ordering::Relaxed,
-                        );
-                        downloading_duration_instant = Instant::now();
-                        #[cfg(feature = "breakpoint-resume")]
-                        {
-                            if _breakpoint_resume {
-                                #[cfg(feature = "tracing")]
-                                let span = tracing::info_span!("Archive Data");
-                                #[cfg(feature = "tracing")]
-                                let _ = span.enter();
-                                let notified = self.archive_complete_notify.notified();
-                                self.data_archive_notify.notify_one();
-                                notified.await;
-                            }
+                        if _breakpoint_resume {
+                            self.save_spec_data().await;
                         }
                         if is_iter_all_chunk {
                             if downloading_chunk_count == 0 {
@@ -234,9 +269,16 @@ impl ChunkManager {
                         }
                     }
                     ChunkMessageKind::Error(err) => {
+                        if _breakpoint_resume {
+                            self.save_spec_data().await;
+                        }
                         return Err(err);
                     }
-                    ChunkMessageKind::DownloadCancelled => {}
+                    ChunkMessageKind::DownloadCancelled => {
+                        if _breakpoint_resume {
+                            self.save_spec_data().await;
+                        }
+                    }
                     ChunkMessageKind::DownloadLenAppend(append_len) => {
                         self.downloaded_len_sender
                             .send_modify(|n| *n += append_len as u64);
@@ -254,10 +296,6 @@ impl ChunkManager {
                 Ok(DownloadingEndCause::Cancelled)
             }
         };
-        self.downloading_duration.fetch_add(
-            downloading_duration_instant.elapsed().as_secs() as u32,
-            Ordering::Relaxed,
-        );
         r
     }
     async fn insert_chunk(&self, item: DownloadedChunkItem) {
@@ -266,7 +304,10 @@ impl ChunkManager {
     }
 
     pub async fn get_chunks(&self) -> Vec<Arc<ChunkItem>> {
-        let mut downloading_chunks: Vec<_> = self.downloading_chunks.lock().await
+        let mut downloading_chunks: Vec<_> = self
+            .downloading_chunks
+            .lock()
+            .await
             .values()
             .map(|n| n.chunk_item.clone())
             .collect();
@@ -277,6 +318,8 @@ impl ChunkManager {
     pub async fn get_chunks_info(&self) -> ChunksInfo {
         let downloading_chunks = self.get_chunks().await;
         let mut finished_chunks = vec![];
+
+        let no_chunk_remaining = self.chunk_iterator.data.read().no_chunk_remaining();
         if !downloading_chunks.is_empty() {
             let first_start = downloading_chunks[0].chunk_info.range.start;
             if first_start != 0 {
@@ -287,17 +330,39 @@ impl ChunkManager {
                     break;
                 }
 
-                let start = downloading_chunks[index].chunk_info.range.start;
+                let start = downloading_chunks[index].chunk_info.range.end;
                 let end = downloading_chunks[index + 1].chunk_info.range.start;
                 if (end - start) != 1 {
                     finished_chunks.push(ChunkRange::new(start + 1, end - 1));
+                }
+            }
+            if no_chunk_remaining {
+                let last = downloading_chunks.last().unwrap();
+                if last.chunk_info.range.end != self.chunk_iterator.content_length - 1 {
+                    finished_chunks.push(ChunkRange::new(
+                        last.chunk_info.range.end + 1,
+                        self.chunk_iterator.content_length - 1,
+                    ))
                 }
             }
         }
         ChunksInfo {
             downloading_chunks,
             finished_chunks,
-            no_chunk_remaining: self.chunk_iterator.data.read().no_chunk_remaining(),
+            no_chunk_remaining,
+        }
+    }
+
+    async fn save_spec_data(&self) {
+        #[cfg(feature = "breakpoint-resume")]
+        {
+            #[cfg(feature = "tracing")]
+                let span = tracing::info_span!("Archive Data");
+            #[cfg(feature = "tracing")]
+                let _ = span.enter();
+            let notified = self.archive_complete_notify.notified();
+            self.data_archive_notify.notify_one();
+            notified.await;
         }
     }
 
@@ -307,7 +372,7 @@ impl ChunkManager {
         (downloading_chunks.len(), removed)
     }
 
-    #[cfg_attr(feature = "tracing",tracing::instrument(skip_all))]
+    #[cfg_attr(feature = "tracing", tracing::instrument(skip_all))]
     async fn download_next_chunk(
         &self,
         file: Arc<Mutex<File>>,

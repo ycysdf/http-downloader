@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
     let (downloader, (status_state, speed_state, speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap()) // 块大小
-            .download_connection_count(NonZeroU8::new(3).unwrap()) // 下载连接数
+            .download_connection_count(NonZeroU8::new(3).unwrap())
             .build((
                 // 下载状态追踪扩展
                 // by cargo feature "status-tracker" enable

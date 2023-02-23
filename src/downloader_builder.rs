@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use headers::{ETag, HeaderMap};
+use headers::{ETag, HeaderMap, HeaderMapExt};
 use url::Url;
 
 use crate::{
@@ -25,11 +25,32 @@ pub struct HttpDownloadConfig {
     pub chunks_send_interval: Option<Duration>,
     pub handle_zero_content: bool,
     pub strict_check_accept_ranges: bool,
+    pub http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
 }
 
 impl HttpDownloadConfig {
     pub fn file_path(&self) -> PathBuf {
         self.save_dir.join(&self.file_name)
+    }
+
+
+    pub fn create_http_request(&self) -> reqwest::Request {
+        let mut request = reqwest::Request::new(reqwest::Method::GET, (*self.url).clone());
+        let header_map = request.headers_mut();
+        header_map.insert(reqwest::header::ACCEPT, headers::HeaderValue::from_str("*/*").unwrap());
+        header_map.typed_insert(headers::Connection::keep_alive());
+        for (header_name, header_value) in self.header_map.iter() {
+            header_map.insert(header_name, header_value.clone());
+        }
+        // 限速后超时会出现异常
+        *request.timeout_mut() = None;
+        // *request.timeout_mut() = self.config.timeout;
+        match self.http_request_configure.as_ref() {
+            None => {request}
+            Some(configure) => {
+                configure(request)
+            }
+        }
     }
 }
 
@@ -48,6 +69,7 @@ pub struct HttpDownloaderBuilder {
     chunks_send_interval: Option<Duration>,
     handle_zero_content: bool,
     strict_check_accept_ranges: bool,
+    http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
 }
 
 impl HttpDownloaderBuilder {
@@ -67,6 +89,7 @@ impl HttpDownloaderBuilder {
             chunks_send_interval: Some(Duration::from_millis(300)),
             handle_zero_content: false,
             strict_check_accept_ranges: true,
+            http_request_configure: None,
         }
     }
 
@@ -129,6 +152,11 @@ impl HttpDownloaderBuilder {
         self
     }
 
+    pub fn http_request_configure(mut self, http_request_configure: impl Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static) -> Self {
+        self.http_request_configure = Some(Box::new(http_request_configure));
+        self
+    }
+
     pub fn build<
         DC: DownloadController + 'static,
         DE: DownloadExtension<HttpFileDownloader, DownloadController=DC>,
@@ -154,6 +182,7 @@ impl HttpDownloaderBuilder {
                 chunks_send_interval: self.chunks_send_interval,
                 handle_zero_content: self.handle_zero_content,
                 strict_check_accept_ranges: self.strict_check_accept_ranges,
+                http_request_configure: self.http_request_configure,
             }),
         ));
         let (ec, es) = extension.layer(downloader.clone(), downloader.clone());

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use anyhow::Error;
 use async_trait::async_trait;
 
-use crate::{DownloadArchiveData, DownloadWay, HttpDownloadConfig};
+use crate::{DownloadArchiveData, DownloadingState, HttpDownloadConfig};
 use crate::breakpoint_resume::{DownloadDataArchiver, DownloadDataArchiverBuilder, DownloadEndInfo};
 
 pub enum ArchiveFilePath<T: Display> {
@@ -79,15 +79,15 @@ impl DownloadDataArchiver for BsonFileArchiver {
         Ok(Some(Box::new(data)))
     }
 
-    async fn download_started(&self, _download_way: &Arc<DownloadWay>, _is_resume: bool) -> anyhow::Result<(), Error> {
+    async fn download_started(&self, _downloading_state: &Arc<DownloadingState>, _is_resume: bool) -> anyhow::Result<(), Error> {
         Ok(())
     }
 
-    async fn download_ended<'a>(&'a self,end_info: DownloadEndInfo<'a>) {
+    async fn download_ended<'a>(&'a self, end_info: DownloadEndInfo<'a>) {
         match end_info {
             DownloadEndInfo::StartError(_) => {}
             DownloadEndInfo::DownloadEnd(result) => {
-                if result.is_err(){
+                if result.is_err() {
                     let _ = tokio::fs::remove_file(&self.archive_file_path).await;
                 }
             }

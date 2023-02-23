@@ -9,14 +9,9 @@ use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    ChunkInfo, ChunkManager, ChunkRange, DownloadArchiveData, DownloadController, DownloadError,
-    DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError,
-    DownloadWay, HttpDownloadConfig, HttpFileDownloader,
-};
+use crate::{ChunkInfo, ChunkRange, DownloadArchiveData, DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadingState, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 
 pub enum FileSave {
     Absolute(PathBuf),
@@ -56,7 +51,7 @@ pub trait DownloadDataArchiver: Send + Sync + 'static {
     async fn load(&self) -> Result<Option<Box<DownloadArchiveData>>, anyhow::Error>;
     async fn download_started(
         &self,
-        download_way: &Arc<DownloadWay>,
+        download_way: &Arc<DownloadingState>,
         is_resume: bool,
     ) -> Result<(), anyhow::Error>;
     async fn download_ended<'a>(&'a self, end_info: DownloadEndInfo<'a>);
@@ -106,52 +101,6 @@ pub struct DownloadBreakpointResumeController<DC: DownloadController, T: Downloa
     pub download_archiver: Arc<T>,
 }
 
-impl<DC: DownloadController, T: DownloadDataArchiver> DownloadBreakpointResumeController<DC, T> {
-    async fn save_archive_data(
-        &self,
-        chunk_manager_mutex: Arc<Mutex<Option<Arc<ChunkManager>>>>,
-    ) -> Result<(), anyhow::Error> {
-        let archive_data = {
-            let chunk_manager = chunk_manager_mutex.lock().await;
-            if let Some(chunk_manager) = chunk_manager.as_ref() {
-                let mut data = {
-                    let data = chunk_manager.chunk_iterator.data.read();
-                    data.clone()
-                };
-                data.last_incomplete_chunks.extend(
-                    chunk_manager.get_chunks().await.iter().filter_map(|n| {
-                        let downloaded_len = n.downloaded_len.load(Ordering::SeqCst);
-                        if downloaded_len == n.chunk_info.range.len() {
-                            None
-                        } else {
-                            let start = n.chunk_info.range.start + downloaded_len;
-                            let end = n.chunk_info.range.end;
-                            Some(ChunkInfo {
-                                index: n.chunk_info.index,
-                                range: ChunkRange::new(start, end),
-                            })
-                        }
-                    }),
-                );
-                Some(DownloadArchiveData {
-                    downloaded_len: chunk_manager.chunk_iterator.content_length
-                        - data.remaining_len(),
-                    downloading_duration: chunk_manager
-                        .downloading_duration
-                        .load(Ordering::Relaxed),
-                    chunk_data: Some(data),
-                })
-            } else {
-                None
-            }
-        };
-        if let Some(archive_data) = archive_data {
-            self.download_archiver.save(Box::new(archive_data)).await?;
-        }
-        Ok(())
-    }
-}
-
 #[async_trait]
 impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController
 for DownloadBreakpointResumeController<DC, T>
@@ -164,9 +113,9 @@ for DownloadBreakpointResumeController<DC, T>
         let (sender, receiver) = sync::oneshot::channel();
         params.breakpoint_resume = true;
         params.archive_data = self.download_archiver.load().await?;
-        let is_resume = !params.archive_data.is_none();
+        let is_resume = params.archive_data.is_some();
 
-        params.download_way_oneshot_vec.push(sender);
+        params.downloading_state_oneshot_vec.push(sender);
         let download_future = match self.inner.to_owned().download(params).await {
             Ok(r) => r,
             Err(err) => {
@@ -177,21 +126,16 @@ for DownloadBreakpointResumeController<DC, T>
             }
         };
 
-        let chunk_manager_mutex = Arc::new(tokio::sync::Mutex::new(None));
         let future = {
             let download_archiver = self.download_archiver.clone();
-            let chunk_manager_mutex = chunk_manager_mutex.clone();
             async move {
-                let download_way_receiver = receiver
+                let downloading_state = receiver
                     .await
                     .map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
                 download_archiver
-                    .download_started(&download_way_receiver, is_resume)
+                    .download_started(&downloading_state, is_resume)
                     .await?;
-                if let DownloadWay::Ranges(chunk_manager) = download_way_receiver.as_ref() {
-                    {
-                        *chunk_manager_mutex.lock().await = Some(chunk_manager.clone());
-                    }
+                if let DownloadWay::Ranges(chunk_manager) = &downloading_state.download_way {
                     let mut notified = chunk_manager.data_archive_notify.notified();
 
                     loop {
@@ -202,18 +146,24 @@ for DownloadBreakpointResumeController<DC, T>
                             data.clone()
                         };
                         data.last_incomplete_chunks.extend(
-                            chunk_manager
-                                .get_chunks()
-                                .await
-                                .iter()
-                                .map(|n| n.chunk_info.to_owned()),
+                            chunk_manager.get_chunks().await.iter().filter_map(|n| {
+                                let downloaded_len = n.downloaded_len.load(Ordering::SeqCst);
+                                if downloaded_len == n.chunk_info.range.len() {
+                                    None
+                                } else {
+                                    let start = n.chunk_info.range.start + downloaded_len;
+                                    let end = n.chunk_info.range.end;
+                                    Some(ChunkInfo {
+                                        index: n.chunk_info.index,
+                                        range: ChunkRange::new(start, end),
+                                    })
+                                }
+                            }),
                         );
                         let archive_data = DownloadArchiveData {
                             downloaded_len: chunk_manager.chunk_iterator.content_length
                                 - data.remaining_len(),
-                            downloading_duration: chunk_manager
-                                .downloading_duration
-                                .load(Ordering::Relaxed),
+                            downloading_duration: downloading_state.get_current_downloading_duration(),
                             chunk_data: Some(data),
                         };
                         notified = chunk_manager.data_archive_notify.notified();
@@ -234,16 +184,6 @@ for DownloadBreakpointResumeController<DC, T>
                 r = future => {r},
                 r = download_future => {
                     self.download_archiver.download_ended(DownloadEndInfo::DownloadEnd(&r)).await;
-                    match r {
-                        Ok(DownloadingEndCause::Cancelled) | Err(_) => {
-                            self.save_archive_data(chunk_manager_mutex).await
-                                .unwrap_or_else(|err| {
-                                    #[cfg(feature = "tracing")]
-                                    tracing::warn!("save_archive_data failed! {:?}",err);
-                                });
-                        }
-                        _ => {}
-                    }
                     r
                 }
             }

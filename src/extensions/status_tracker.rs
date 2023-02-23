@@ -138,7 +138,7 @@ impl<DC: DownloadController> DownloadController for DownloadStatusTrackerControl
         status_sender.change_status(DownloaderStatus::Pending(NetworkItemPendingType::Starting));
         let (download_way_sender, download_way_receiver) = sync::oneshot::channel();
 
-        params.download_way_oneshot_vec.push(download_way_sender);
+        params.downloading_state_oneshot_vec.push(download_way_sender);
         match self.inner.to_owned().download(params).await {
             Ok(mut receiver) => {
                 status_sender.change_status(DownloaderStatus::Pending(NetworkItemPendingType::Initializing));

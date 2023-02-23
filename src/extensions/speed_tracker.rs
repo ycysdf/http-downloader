@@ -85,7 +85,7 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionContro
         mut params: DownloadParams,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
         let (sender, download_way_receiver) = sync::oneshot::channel();
-        params.download_way_oneshot_vec.push(sender);
+        params.downloading_state_oneshot_vec.push(sender);
 
         // let last_downloaded_len = params.archive_data.as_ref().map(|n| n.downloaded_len).unwrap_or(0);
         let download_future = self.inner.to_owned().download(params).await?;
@@ -101,7 +101,7 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionContro
                 .map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
 
             let mut instant = Instant::now();
-            let mut last_downloaded_len = if let DownloadWay::Ranges(chunk_manager) = download_way_receiver.as_ref() {
+            let mut last_downloaded_len = if let DownloadWay::Ranges(chunk_manager) = &download_way_receiver.download_way {
                 chunk_manager.downloaded_len()
             } else {
                 0

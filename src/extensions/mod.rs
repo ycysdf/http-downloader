@@ -7,10 +7,7 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use tokio::sync;
 
-use crate::{
-    ChunkData, DownloadError, DownloadStartError, DownloadStopError, DownloadWay,
-    DownloadedLenChangeNotify, DownloadingEndCause, HttpFileDownloader,
-};
+use crate::{ChunkData, DownloadError, DownloadStartError, DownloadStopError, DownloadedLenChangeNotify, DownloadingEndCause, HttpFileDownloader, DownloadingState};
 
 #[cfg(feature = "breakpoint-resume")]
 pub mod breakpoint_resume;
@@ -65,7 +62,7 @@ impl DownloadArchiveData {
 
 #[derive(Default)]
 pub struct DownloadParams {
-    pub download_way_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadWay>>>,
+    pub downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>>,
     pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
     pub archive_data: Option<Box<DownloadArchiveData>>,
     pub breakpoint_resume: bool,

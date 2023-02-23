@@ -34,13 +34,13 @@ async fn main() -> Result<()> {
         async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(3)).await;
-                info!("Change connection count to 1");
+                tracing::info!("Change connection count to 1");
                 downloader.change_connection_count(NonZeroU8::new(1).unwrap()).unwrap();
                 tokio::time::sleep(Duration::from_secs(2)).await;
-                info!("Change connection count to 8");
+                tracing::info!("Change connection count to 8");
                 downloader.change_connection_count(NonZeroU8::new(8).unwrap()).unwrap();
                 tokio::time::sleep(Duration::from_secs(2)).await;
-                info!("Change connection count to 4");
+                tracing::info!("Change connection count to 4");
                 downloader.change_connection_count(NonZeroU8::new(4).unwrap()).unwrap();
             }
         }
@@ -50,13 +50,13 @@ async fn main() -> Result<()> {
         async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(4)).await;
-                info!("change_chunk_size to 1M");
+                tracing::info!("change_chunk_size to 1M");
                 downloader.change_chunk_size(NonZeroUsize::new(1024 * 1024 * 1).unwrap()).unwrap();
                 tokio::time::sleep(Duration::from_secs(4)).await;
-                info!("change_chunk_size to 8M");
+                tracing::info!("change_chunk_size to 8M");
                 downloader.change_chunk_size(NonZeroUsize::new(1024 * 1024 * 8).unwrap()).unwrap();
                 tokio::time::sleep(Duration::from_secs(4)).await;
-                info!("change_chunk_size to 4M");
+                tracing::info!("change_chunk_size to 4M");
                 downloader.change_chunk_size(NonZeroUsize::new(1024 * 1024 * 4).unwrap()).unwrap();
             }
         }
