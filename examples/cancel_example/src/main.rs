@@ -17,7 +17,7 @@ async fn main() -> Result<()> {
     }
 
     let save_dir = PathBuf::from("C:/download");
-    let test_url = Url::parse("http://mirror.hk.leaseweb.net/speedtest/200mb.bin")?;
+    let test_url = Url::parse("http://mirror.hk.leaseweb.net/speedtest/100mb.bin")?;
     let (downloader, (_status_state, _speed_state, speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap())
