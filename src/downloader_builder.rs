@@ -14,9 +14,12 @@ use crate::{
 pub struct HttpDownloadConfig {
     pub download_connection_count: NonZeroU8,
     pub chunk_size: NonZeroUsize,
-    pub file_name: String,
-    pub url: Arc<Url>,
     pub save_dir: PathBuf,
+    pub file_name: String,
+    pub delete_empty_file_on_err:bool,
+    pub open_option: Box<dyn Fn(&mut std::fs::OpenOptions)+ Send + Sync + 'static>,
+    pub create_dir: bool,
+    pub url: Arc<Url>,
     pub etag: Option<ETag>,
     pub request_retry_count: u8,
     // pub timeout: Option<Duration>,
@@ -46,7 +49,7 @@ impl HttpDownloadConfig {
         *request.timeout_mut() = None;
         // *request.timeout_mut() = self.config.timeout;
         match self.http_request_configure.as_ref() {
-            None => {request}
+            None => { request }
             Some(configure) => {
                 configure(request)
             }
@@ -60,6 +63,9 @@ pub struct HttpDownloaderBuilder {
     url: Url,
     save_dir: PathBuf,
     file_name: Option<String>,
+    open_option: Box<dyn Fn(&mut std::fs::OpenOptions)+ Send + Sync + 'static>,
+    create_dir: bool,
+    delete_empty_file_on_err:bool,
     request_retry_count: u8,
     // timeout: Option<Duration>,
     etag: Option<ETag>,
@@ -78,6 +84,11 @@ impl HttpDownloaderBuilder {
             client: None,
             chunk_size: NonZeroUsize::new(1024 * 1024 * 4).unwrap(), // 4M,
             file_name: None,
+            open_option: Box::new(|o| {
+                o.create(true).write(true);
+            }),
+            create_dir: true,
+            delete_empty_file_on_err: true,
             request_retry_count: 3,
             download_connection_count: NonZeroU8::new(3).unwrap(),
             url,
@@ -95,6 +106,15 @@ impl HttpDownloaderBuilder {
 
     pub fn client(mut self, client: Option<reqwest::Client>) -> Self {
         self.client = client;
+        self
+    }
+
+    pub fn create_dir(mut self, create_dir: bool) -> Self {
+        self.create_dir = create_dir;
+        self
+    }
+    pub fn delete_empty_file_on_err(mut self, delete_file_on_err: bool) -> Self {
+        self.delete_empty_file_on_err = delete_file_on_err;
         self
     }
     pub fn downloaded_len_send_interval(
@@ -167,11 +187,14 @@ impl HttpDownloaderBuilder {
         let downloader = Arc::new(HttpFileDownloader::new(
             self.client.unwrap_or(Default::default()),
             Box::new(HttpDownloadConfig {
+                delete_empty_file_on_err: self.delete_empty_file_on_err,
                 download_connection_count: self.download_connection_count,
                 chunk_size: self.chunk_size,
                 file_name: self
                     .file_name
                     .unwrap_or_else(|| self.url.file_name().to_string()),
+                open_option: self.open_option,
+                create_dir: self.create_dir,
                 url: Arc::new(self.url),
                 save_dir: self.save_dir,
                 etag: self.etag,
