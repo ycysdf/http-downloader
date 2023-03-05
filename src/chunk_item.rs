@@ -1,7 +1,7 @@
 use std::io::SeekFrom;
 use std::ops::Deref;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
 use bytes::Bytes;
@@ -113,26 +113,52 @@ impl ChunkItem {
         let future = async {
             'r: loop {
                 request.headers_mut().typed_insert(
-                    ChunkRange::new(self.chunk_info.range.start + chunk_bytes.len() as u64, self.chunk_info.range.end)
-                        .to_range_header(),
+                    ChunkRange::new(
+                        self.chunk_info.range.start + chunk_bytes.len() as u64,
+                        self.chunk_info.range.end,
+                    )
+                    .to_range_header(),
                 );
                 // 避免 clone request ?
                 let response = self.client.execute(*ChunkManager::clone_request(&request));
                 #[cfg(feature = "tracing")]
                 let response = response.instrument(tracing::info_span!("chunk's http request"));
-                let response = response.await?;
+                let response = match response.await {
+                    Ok(response) => {
+                        cur_retry_count = 0;
+                        response
+                    }
+                    Err(err) => {
+                        cur_retry_count += 1;
+                        #[cfg(feature = "tracing")]
+                        tracing::trace!(
+                            "Request error! {:?},retry_info: {}/{}",
+                            err,
+                            cur_retry_count,
+                            retry_count
+                        );
+                        if cur_retry_count > retry_count {
+                            return Err(DownloadError::HttpRequestFailed(err));
+                        }
+                        continue 'r;
+                    }
+                };
                 if self.etag.is_some() {
                     let etag = response.headers().typed_get::<headers::ETag>();
                     if etag != self.etag {
                         #[cfg(feature = "tracing")]
-                        tracing::error!("current etag: {:?} , target etag:{:?}", self.etag, etag);
+                        tracing::trace!(
+                            "etag mismatching,your etag: {:?} , current etag:{:?}",
+                            self.etag,
+                            etag
+                        );
                         return Err(DownloadError::ServerFileAlreadyChanged);
                     }
                 }
                 let mut stream = response.bytes_stream();
                 while let Some(bytes) = stream.next().await {
                     #[cfg(feature = "tracing")]
-                    let span = tracing::info_span!("process received bytes",is_ok = bytes.is_ok());
+                    let span = tracing::info_span!("process received bytes", is_ok = bytes.is_ok());
                     #[cfg(feature = "tracing")]
                     let _ = span.enter();
                     let bytes: Bytes = {

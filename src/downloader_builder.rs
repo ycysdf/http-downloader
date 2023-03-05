@@ -12,11 +12,12 @@ use crate::{
 };
 
 pub struct HttpDownloadConfig {
+    // 提前设置长度，如果存储空间不足将提前报错
+    pub set_len_in_advance: bool,
     pub download_connection_count: NonZeroU8,
     pub chunk_size: NonZeroUsize,
     pub save_dir: PathBuf,
     pub file_name: String,
-    pub delete_empty_file_on_err:bool,
     pub open_option: Box<dyn Fn(&mut std::fs::OpenOptions)+ Send + Sync + 'static>,
     pub create_dir: bool,
     pub url: Arc<Url>,
@@ -62,10 +63,10 @@ pub struct HttpDownloaderBuilder {
     download_connection_count: NonZeroU8,
     url: Url,
     save_dir: PathBuf,
+    set_len_in_advance: bool,
     file_name: Option<String>,
     open_option: Box<dyn Fn(&mut std::fs::OpenOptions)+ Send + Sync + 'static>,
     create_dir: bool,
-    delete_empty_file_on_err:bool,
     request_retry_count: u8,
     // timeout: Option<Duration>,
     etag: Option<ETag>,
@@ -88,7 +89,6 @@ impl HttpDownloaderBuilder {
                 o.create(true).write(true);
             }),
             create_dir: true,
-            delete_empty_file_on_err: true,
             request_retry_count: 3,
             download_connection_count: NonZeroU8::new(3).unwrap(),
             url,
@@ -101,6 +101,7 @@ impl HttpDownloaderBuilder {
             handle_zero_content: false,
             strict_check_accept_ranges: true,
             http_request_configure: None,
+            set_len_in_advance: true,
         }
     }
 
@@ -113,8 +114,8 @@ impl HttpDownloaderBuilder {
         self.create_dir = create_dir;
         self
     }
-    pub fn delete_empty_file_on_err(mut self, delete_file_on_err: bool) -> Self {
-        self.delete_empty_file_on_err = delete_file_on_err;
+    pub fn set_len_in_advance(mut self, set_len_in_advance: bool) -> Self {
+        self.set_len_in_advance = set_len_in_advance;
         self
     }
     pub fn downloaded_len_send_interval(
@@ -187,7 +188,7 @@ impl HttpDownloaderBuilder {
         let downloader = Arc::new(HttpFileDownloader::new(
             self.client.unwrap_or(Default::default()),
             Box::new(HttpDownloadConfig {
-                delete_empty_file_on_err: self.delete_empty_file_on_err,
+                set_len_in_advance: self.set_len_in_advance,
                 download_connection_count: self.download_connection_count,
                 chunk_size: self.chunk_size,
                 file_name: self

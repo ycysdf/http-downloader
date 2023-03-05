@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
-use tokio_util::sync::CancellationToken;
 
 use crate::{ChunkInfo, ChunkRange, DownloadArchiveData, DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadingState, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 
@@ -171,9 +170,7 @@ for DownloadBreakpointResumeController<DC, T>
                         download_archiver.save(Box::new(archive_data)).await?;
                     }
                 } else {
-                    let download_finished_token = CancellationToken::new();
-                    download_finished_token.cancelled().await;
-                    unreachable!();
+                    futures_util::future::pending().await
                 }
             }
         };
