@@ -575,6 +575,11 @@ impl HttpFileDownloader {
             tracing::warn!("DownloadingEndCause Send Failed! {:?}", _err);
         });
 
+        end_sender.send(dec_result?).unwrap_or_else(|_err| {
+            #[cfg(feature = "tracing")]
+            tracing::warn!("DownloadingEndCause Send Failed! {:?}", _err);
+        });
+
         Ok(dec)
     }
 }
