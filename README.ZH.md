@@ -22,13 +22,7 @@
   </h4>
 </div>
 
-## 一个简单的 Http 下载器
-
-我最近在做一个下载器软件，便把 Http 下载部分单独抽出来进行了开源，只要我还在继续做下载器，这个库就将持续更新
-
-库属于可能存在没发现的bug，目前没有写单元测试
-
-欢迎贡献代码
+这个库是我正在做的一个下载器的 Http 下载部分，目前没有编写单元测试，可能存在一些没发现bug，欢迎贡献代码
 
 ## 功能：
 
@@ -77,7 +71,7 @@ tokio = { version = "1", features = ["rt", "macros"] }
 
 使用此库做的一个，简单的终端 UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
 
-## 简单用例
+## 用例
 
 通过 `HttpDownloaderBuilder` `build` 函数参数去设置需要添加的扩展，需要传入一个元组，元组的成员就是扩展
 
@@ -105,9 +99,6 @@ use http_downloader::{
     status_tracker::DownloadStatusTrackerExtension,
 };
 use http_downloader::bson_file_archiver::{ArchiveFilePath, BsonFileArchiverBuilder};
-
-
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -187,3 +178,6 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
+
+
+更多用例，请看这里：[Examples](https://github.com/ycysdf/http-downloader/blob/main/examples)
