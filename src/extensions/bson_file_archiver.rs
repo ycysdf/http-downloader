@@ -52,13 +52,8 @@ pub struct BsonFileArchiver {
 #[async_trait]
 impl DownloadDataArchiver for BsonFileArchiver {
     async fn save(&self, data: Box<DownloadArchiveData>) -> Result<(), anyhow::Error> {
-        let bytes = bson::to_vec(&data);
-        let bytes = bytes.map_err(|err| {
-            tracing::error!("serialize archive data failed! {}", err);
-            Error::new(err)
-        })?;
+        let bytes = bson::to_vec(&data)?;
         tokio::fs::write(&self.archive_file_path, bytes).await.map_err(|err| {
-            tracing::error!("write data to file failed! {}", err);
             err
         })?;
         Ok(())
@@ -68,14 +63,8 @@ impl DownloadDataArchiver for BsonFileArchiver {
         if !self.archive_file_path.exists() {
             return Ok(None);
         }
-        let bytes = tokio::fs::read(&self.archive_file_path).await.map_err(|err| {
-            tracing::error!("read file {:?} failed! {}", &self.archive_file_path, err);
-            err
-        })?;
-        let data = bson::from_slice::<DownloadArchiveData>(&bytes).map_err(|err| {
-            tracing::error!("deserialize file {:?} failed! {}", &self.archive_file_path, err);
-            err
-        })?;
+        let bytes = tokio::fs::read(&self.archive_file_path).await?;
+        let data = bson::from_slice::<DownloadArchiveData>(&bytes)?;
         Ok(Some(Box::new(data)))
     }
 

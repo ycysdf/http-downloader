@@ -171,7 +171,7 @@ impl ChunkManager {
             .await;
         if is_iter_all_chunk {
             #[cfg(feature = "tracing")]
-            tracing::warn!("No Chunk!");
+            tracing::trace!("No Chunk!");
             return Ok(DownloadingEndCause::DownloadFinished);
         }
 
@@ -272,6 +272,7 @@ impl ChunkManager {
                         if _breakpoint_resume {
                             self.save_spec_data().await;
                         }
+                        self.cancel_token.cancel();
                         return Err(err);
                     }
                     ChunkMessageKind::DownloadCancelled => {

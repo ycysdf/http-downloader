@@ -96,7 +96,7 @@ impl ChunkItem {
             .await
             .unwrap_or_else(|_err| {
                 #[cfg(feature = "tracing")]
-                tracing::warn!("ChunkMessageInfoSendFailed! {:?}", _err);
+                tracing::trace!("ChunkMessageInfoSendFailed! {:?}", _err);
             });
     }
 
@@ -170,7 +170,7 @@ impl ChunkItem {
                             Err(err) => {
                                 cur_retry_count += 1;
                                 #[cfg(feature = "tracing")]
-                                tracing::warn!(
+                                tracing::trace!(
                                     "Request error! {:?},retry_info: {}/{}",
                                     err,
                                     cur_retry_count,
@@ -250,7 +250,7 @@ impl ChunkItem {
                                 .await
                                 .unwrap_or_else(|_err| {
                                     #[cfg(feature = "tracing")]
-                                    tracing::warn!("ChunkMessageInfoSendFailed! {:?}", _err);
+                                    tracing::trace!("ChunkMessageInfoSendFailed! {:?}", _err);
                                 })
                         }
                     }
@@ -259,7 +259,7 @@ impl ChunkItem {
                         .await
                         .unwrap_or_else(|_err| {
                             #[cfg(feature = "tracing")]
-                            tracing::warn!("ChunkMessageInfoSendFailed! {:?}", _err);
+                            tracing::trace!("ChunkMessageInfoSendFailed! {:?}", _err);
                         }),
                 };
             },
