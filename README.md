@@ -22,6 +22,7 @@
   </h4>
 </div>
 
+> The project is being refactored and will not dependent on the asynchronous runtime
 
 ## Features 
 
