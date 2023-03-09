@@ -7,9 +7,7 @@ use std::time::Duration;
 use headers::{ETag, HeaderMap, HeaderMapExt};
 use url::Url;
 
-use crate::{
-    DownloadController, DownloadExtension, ExtensibleHttpFileDownloader, HttpFileDownloader,
-};
+use crate::{DownloadExtension, ExtendedHttpFileDownloader, HttpFileDownloader};
 
 pub struct HttpDownloadConfig {
     // 提前设置长度，如果存储空间不足将提前报错
@@ -18,7 +16,7 @@ pub struct HttpDownloadConfig {
     pub chunk_size: NonZeroUsize,
     pub save_dir: PathBuf,
     pub file_name: String,
-    pub open_option: Box<dyn Fn(&mut std::fs::OpenOptions)+ Send + Sync + 'static>,
+    pub open_option: Box<dyn Fn(&mut std::fs::OpenOptions) + Send + Sync + 'static>,
     pub create_dir: bool,
     pub url: Arc<Url>,
     pub etag: Option<ETag>,
@@ -65,7 +63,7 @@ pub struct HttpDownloaderBuilder {
     save_dir: PathBuf,
     set_len_in_advance: bool,
     file_name: Option<String>,
-    open_option: Box<dyn Fn(&mut std::fs::OpenOptions)+ Send + Sync + 'static>,
+    open_option: Box<dyn Fn(&mut std::fs::OpenOptions) + Send + Sync + 'static>,
     create_dir: bool,
     request_retry_count: u8,
     // timeout: Option<Duration>,
@@ -179,15 +177,14 @@ impl HttpDownloaderBuilder {
     }
 
     pub fn build<
-        DC: DownloadController + 'static,
-        DE: DownloadExtension<HttpFileDownloader, DownloadController=DC>,
+        DE: DownloadExtension,
     >(
         self,
-        extension: DE,
-    ) -> (ExtensibleHttpFileDownloader, DE::ExtensionState) {
-        let downloader = Arc::new(HttpFileDownloader::new(
+        param: DE::ExtensionParam,
+    ) -> (ExtendedHttpFileDownloader, DE::ExtensionState) {
+        let downloader = HttpFileDownloader::new(
             self.client.unwrap_or(Default::default()),
-            Box::new(HttpDownloadConfig {
+            Arc::new(HttpDownloadConfig {
                 set_len_in_advance: self.set_len_in_advance,
                 download_connection_count: self.download_connection_count,
                 chunk_size: self.chunk_size,
@@ -208,9 +205,9 @@ impl HttpDownloaderBuilder {
                 strict_check_accept_ranges: self.strict_check_accept_ranges,
                 http_request_configure: self.http_request_configure,
             }),
-        ));
-        let (ec, es) = extension.layer(downloader.clone(), downloader.clone());
-        (ExtensibleHttpFileDownloader::new(downloader, ec), es)
+        );
+        let (extension, es) = DE::new(param, &downloader);
+        (ExtendedHttpFileDownloader::new(downloader, Box::new(extension)), es)
     }
 }
 

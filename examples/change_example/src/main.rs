@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
             }));
     let downloader = Arc::new(downloader);
 
-    let finished_future = downloader.start().await?;
+    let finished_future = downloader.download_to_end().await?;
 
     tokio::spawn({
         let downloader = downloader.clone();

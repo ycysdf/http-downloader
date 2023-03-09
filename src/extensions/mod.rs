@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -7,7 +8,7 @@ use futures_util::future::BoxFuture;
 use serde::{Deserialize, Serialize};
 use tokio::sync;
 
-use crate::{ChunkData, DownloadError, DownloadStartError, DownloadStopError, DownloadedLenChangeNotify, DownloadingEndCause, HttpFileDownloader, DownloadingState};
+use crate::{ChunkData, DownloadedLenChangeNotify, DownloadError, DownloadingEndCause, DownloadingState, DownloadStartError, DownloadStopError, HttpFileDownloader};
 
 #[cfg(feature = "breakpoint-resume")]
 pub mod breakpoint_resume;
@@ -20,19 +21,100 @@ pub mod speed_tracker;
 #[cfg(feature = "status-tracker")]
 pub mod status_tracker;
 
+pub type DownloadFuture<'a> = BoxFuture<'a, Result<DownloadingEndCause, DownloadError>>;
+pub type DownloadCancelFuture<'a> = BoxFuture<'a, Result<(), DownloadStopError>>;
+
+
+#[async_trait]
+pub trait DownloaderWrapper: Send + Sync + 'static {
+    async fn download<'d>(
+        &mut self,
+        download_future: DownloadFuture<'d>,
+    ) -> Result<DownloadFuture<'d>, DownloadStartError> {
+        Ok(download_future)
+    }
+    async fn cancel(&self, cancel_future: DownloadCancelFuture<'_>) -> Result<(), DownloadStopError> {
+        cancel_future.await
+    }
+}
+
+pub trait DownloadExtension: DownloaderWrapper + Send + Sync + 'static {
+    type ExtensionParam;
+    type ExtensionState;
+
+    fn new(param:Self::ExtensionParam,downloader: &HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized;
+}
+
+impl DownloaderWrapper for () {}
+
+impl DownloadExtension for () {
+    type ExtensionParam = ();
+    type ExtensionState = ();
+
+    fn new(_param:Self::ExtensionParam,_: &HttpFileDownloader) -> (Self, Self::ExtensionState) {
+        ((), ())
+    }
+}
+
+
+macro_rules! impl_download_extension_tuple {
+    (
+        $(($de:ident,$ds:ident)),*
+    ) => {
+        #[async_trait]
+        #[allow(non_snake_case)]
+        impl<
+            $($de: DownloadExtension,)*
+            > DownloaderWrapper for ($($de,)*)
+        {
+            async fn download<'d>(
+                &mut self,
+                mut download_future: DownloadFuture<'d>,
+            ) -> Result<DownloadFuture<'d>, DownloadStartError> {
+                let ($($de,)*) = &mut self;
+                $(let download_future = $de.download(download_future).await?;)*
+                Ok(download_future)
+            }
+            async fn cancel(&self, cancel_future: DownloadCancelFuture<'_>) -> Result<(), DownloadStopError> {
+                let ($($de,)*) = &self;
+                $(let cancel_future = $de.cancel(cancel_future);)*
+                Ok(cancel_future.await?)
+            }
+        }
+
+        #[allow(non_snake_case)]
+        impl<
+            $($de: DownloadExtension,)*
+            > DownloadExtension for ($($de,)*)
+        {
+            type ExtensionState = ($($de::ExtensionState,)*);
+            type ExtensionParam = ($($de::ExtensionParam,)*);
+
+            fn new(param:Self::ExtensionParam,downloader: &HttpFileDownloader) -> (Self, Self::ExtensionState) {
+                let ($($ds,)*) = param;
+                $(let ($de, $ds) = $de::new($ds,downloader);)*
+                (($($de,)*), ($($ds,)*))
+            }
+        }
+
+    };
+}
+
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3));
+
 #[async_trait]
 pub trait DownloadController: Send + Sync + 'static {
     async fn download(
         self: Arc<Self>,
-        params: DownloadParams,
+        params: DownloadContext,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>;
     async fn cancel(&self) -> Result<(), DownloadStopError>;
 }
 
 #[cfg_attr(
-    feature = "async-graphql",
-    derive(async_graphql::SimpleObject),
-    graphql(complex)
+feature = "async-graphql",
+derive(async_graphql::SimpleObject),
+graphql(complex)
 )]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
@@ -61,140 +143,15 @@ impl DownloadArchiveData {
 }
 
 #[derive(Default)]
-pub struct DownloadParams {
+pub struct DownloadContext {
     pub downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>>,
     pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
     pub archive_data: Option<Box<DownloadArchiveData>>,
     pub breakpoint_resume: bool,
 }
 
-impl DownloadParams {
+impl DownloadContext {
     pub fn new() -> Self {
         Default::default()
     }
 }
-
-pub trait DownloadExtension<DC: DownloadController> {
-    type DownloadController;
-    type ExtensionState;
-    fn layer(
-        self,
-        downloader: Arc<HttpFileDownloader>,
-        inner: Arc<DC>,
-    ) -> (Arc<Self::DownloadController>, Self::ExtensionState);
-}
-
-impl DownloadExtension<HttpFileDownloader> for () {
-    type DownloadController = HttpFileDownloader;
-    type ExtensionState = ();
-
-    fn layer(
-        self,
-        downloader: Arc<HttpFileDownloader>,
-        inner: Arc<HttpFileDownloader>,
-    ) -> (Arc<Self::DownloadController>, Self::ExtensionState) {
-        drop(downloader);
-        (inner, ())
-    }
-}
-
-macro_rules! impl_download_extension_tuple {
-    (
-        $start:ident,$(($dc:ident,$de:ident,$der:ident)),*,$end:ident
-    ) => {
-        #[allow(non_snake_case)]
-        impl<
-            $($dc: DownloadController,)*
-            $end: DownloadController,
-            $($de: DownloadExtension<$dc, DownloadController = $der>),*
-            > DownloadExtension<$start> for ($($de,)*)
-        {
-            type DownloadController = $end;
-            type ExtensionState = ($($de::ExtensionState,)*);
-
-            fn layer(
-                self,
-                downloader: Arc<HttpFileDownloader>,
-                inner: Arc<$start>,
-            ) -> (
-                Arc<Self::DownloadController>,
-                Self::ExtensionState,
-            ) {
-                let ($($de,)*) = self;
-                $(let (inner, $dc) = $de.layer(downloader.clone(), inner);)*
-                (inner, ($($dc,)*))
-            }
-        }
-
-    };
-}
-
-impl_download_extension_tuple!(DC1, (DC1, DE1, DC2), DC2);
-impl_download_extension_tuple!(DC1, (DC1, DE1, DC2), (DC2, DE2, DC3), DC3);
-impl_download_extension_tuple!(DC1, (DC1, DE1, DC2), (DC2, DE2, DC3), (DC3, DE3, DC4), DC4);
-
-impl_download_extension_tuple!(
-    DC1,
-    (DC1, DE1, DC2),
-    (DC2, DE2, DC3),
-    (DC3, DE3, DC4),
-    (DC4, DE4, DC5),
-    DC5
-);
-impl_download_extension_tuple!(
-    DC1,
-    (DC1, DE1, DC2),
-    (DC2, DE2, DC3),
-    (DC3, DE3, DC4),
-    (DC4, DE4, DC5),
-    (DC5, DE5, DC6),
-    DC6
-);
-impl_download_extension_tuple!(
-    DC1,
-    (DC1, DE1, DC2),
-    (DC2, DE2, DC3),
-    (DC3, DE3, DC4),
-    (DC4, DE4, DC5),
-    (DC5, DE5, DC6),
-    (DC6, DE6, DC7),
-    DC7
-);
-impl_download_extension_tuple!(
-    DC1,
-    (DC1, DE1, DC2),
-    (DC2, DE2, DC3),
-    (DC3, DE3, DC4),
-    (DC4, DE4, DC5),
-    (DC5, DE5, DC6),
-    (DC6, DE6, DC7),
-    (DC7, DE7, DC8),
-    DC8
-);
-
-impl_download_extension_tuple!(
-    DC1,
-    (DC1, DE1, DC2),
-    (DC2, DE2, DC3),
-    (DC3, DE3, DC4),
-    (DC4, DE4, DC5),
-    (DC5, DE5, DC6),
-    (DC6, DE6, DC7),
-    (DC7, DE7, DC8),
-    (DC8, DE8, DC9),
-    DC9
-);
-
-impl_download_extension_tuple!(
-    DC1,
-    (DC1, DE1, DC2),
-    (DC2, DE2, DC3),
-    (DC3, DE3, DC4),
-    (DC4, DE4, DC5),
-    (DC5, DE5, DC6),
-    (DC6, DE6, DC7),
-    (DC7, DE7, DC8),
-    (DC8, DE8, DC9),
-    (DC9, DE9, DC10),
-    DC10
-);

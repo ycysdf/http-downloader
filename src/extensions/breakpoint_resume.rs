@@ -10,7 +10,7 @@ use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
-use crate::{ChunkInfo, ChunkRange, DownloadArchiveData, DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadingState, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
+use crate::{ChunkInfo, ChunkRange, DownloadArchiveData, DownloadController, DownloadError, DownloadExtensionOld, DownloadingEndCause, DownloadingState, DownloadContext, DownloadStartError, DownloadStopError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 
 pub enum FileSave {
     Absolute(PathBuf),
@@ -61,7 +61,7 @@ pub trait DownloadDataArchiverBuilder {
     fn build(self, config: &HttpDownloadConfig) -> Self::DownloadDataArchiver;
 }
 
-impl<DC: DownloadController, T: DownloadDataArchiverBuilder> DownloadExtension<DC>
+impl<DC: DownloadController, T: DownloadDataArchiverBuilder> DownloadExtensionOld<DC>
 for DownloadBreakpointResumeExtension<T>
 {
     type DownloadController = DownloadBreakpointResumeController<DC, T::DownloadDataArchiver>;
@@ -106,7 +106,7 @@ for DownloadBreakpointResumeController<DC, T>
 {
     async fn download(
         self: Arc<Self>,
-        mut params: DownloadParams,
+        mut params: DownloadContext,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
     {
         let (sender, receiver) = sync::oneshot::channel();

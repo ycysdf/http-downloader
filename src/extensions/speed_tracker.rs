@@ -9,7 +9,7 @@ use futures_util::FutureExt;
 use futures_util::Stream;
 use tokio::{select, sync};
 
-use crate::{DownloadController, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, DownloadWay, HttpFileDownloader};
+use crate::{DownloadController, DownloadError, DownloadExtensionOld, DownloadingEndCause, DownloadContext, DownloadStartError, DownloadStopError, DownloadWay, HttpFileDownloader};
 
 #[derive(Default)]
 pub struct DownloadSpeedTrackerExtension {
@@ -46,7 +46,7 @@ impl DownloadSpeedTrackerState {
     }
 }
 
-impl<DC: DownloadController> DownloadExtension<DC> for DownloadSpeedTrackerExtension {
+impl<DC: DownloadController> DownloadExtensionOld<DC> for DownloadSpeedTrackerExtension {
     type DownloadController = DownloadSpeedExtensionController<DC>;
     type ExtensionState = DownloadSpeedTrackerState;
 
@@ -82,7 +82,7 @@ pub struct DownloadSpeedExtensionController<DC: DownloadController> {
 impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionController<DC> {
     async fn download(
         self: Arc<Self>,
-        mut params: DownloadParams,
+        mut params: DownloadContext,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
         let (sender, download_way_receiver) = sync::oneshot::channel();
         params.downloading_state_oneshot_vec.push(sender);

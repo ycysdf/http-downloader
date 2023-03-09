@@ -1,8 +1,14 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::num::{NonZeroU8, NonZeroUsize};
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU8, Ordering};
+use std::task::{Context, Poll};
 
+use futures_util::{FutureExt, StreamExt};
+use futures_util::future::{BoxFuture, OptionFuture};
+use futures_util::stream::FuturesUnordered;
 use reqwest::Request;
 use tokio::{select, sync};
 use tokio::fs::File;
@@ -10,7 +16,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    chunk_item::{ChunkItem, ChunkMessageInfo, ChunkMessageKind, DownloadedChunkItem},
+    chunk_item::{ChunkItem, ChunkMessageInfo},
     ChunkIterator, ChunkRange, DownloadError,
 };
 use crate::{DownloadedLenChangeNotify, DownloadingEndCause};
@@ -28,52 +34,10 @@ pub struct ChunksInfo {
     no_chunk_remaining: bool,
 }
 
-#[cfg(feature = "async-graphql")]
-pub struct DownloadChunkObject(pub Arc<ChunkItem>);
-
-#[cfg(feature = "async-graphql")]
-impl From<Arc<ChunkItem>> for DownloadChunkObject {
-    fn from(value: Arc<ChunkItem>) -> Self {
-        DownloadChunkObject(value)
-    }
-}
-
-#[cfg(feature = "async-graphql")]
-#[async_graphql::Object]
-impl DownloadChunkObject {
-    pub async fn index(&self) -> usize {
-        self.0.chunk_info.index
-    }
-    pub async fn start(&self) -> u64 {
-        self.0.chunk_info.range.start
-    }
-    pub async fn end(&self) -> u64 {
-        self.0.chunk_info.range.end
-    }
-    pub async fn len(&self) -> u64 {
-        self.0.chunk_info.range.len()
-    }
-    pub async fn downloaded_len(&self) -> u64 {
-        self.0.downloaded_len.load(Ordering::Relaxed)
-    }
-}
-
-#[cfg_attr(feature = "async-graphql", async_graphql::ComplexObject)]
-impl ChunksInfo {
-    #[cfg(feature = "async-graphql")]
-    pub async fn downloading_chunks(&self) -> Vec<DownloadChunkObject> {
-        self.downloading_chunks
-            .iter()
-            .cloned()
-            .map(Into::into)
-            .collect()
-    }
-}
-
 pub struct ChunkManager {
     downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
     pub chunk_iterator: ChunkIterator,
-    downloading_chunks: Mutex<HashMap<usize, DownloadedChunkItem>>,
+    downloading_chunks: Mutex<HashMap<usize, Arc<ChunkItem>>>,
     #[cfg(feature = "breakpoint-resume")]
     pub data_archive_notify: sync::Notify,
     #[cfg(feature = "breakpoint-resume")]
@@ -153,7 +117,7 @@ impl ChunkManager {
 
     pub async fn start_download(
         &self,
-        file: Arc<Mutex<File>>,
+        file: File,
         request: Box<Request>,
         downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
         _breakpoint_resume: bool,
@@ -161,92 +125,143 @@ impl ChunkManager {
         let (chunk_message_sender, mut chunk_message_receiver) =
             sync::mpsc::channel::<ChunkMessageInfo>(64);
 
-        let mut is_iter_all_chunk = !self
-            .download_next_chunk(
-                file.clone(),
-                chunk_message_sender.clone(),
-                downloaded_len_receiver.clone(),
-                Self::clone_request(&request),
-            )
-            .await;
-        if is_iter_all_chunk {
-            #[cfg(feature = "tracing")]
-            tracing::trace!("No Chunk!");
-            return Ok(DownloadingEndCause::DownloadFinished);
+        enum RunFuture<'a> {
+            DownloadConnectionCountChanged(BoxFuture<'a, (sync::watch::Receiver<NonZeroU8>, u8)>),
+            ChunkDownloadEnd {
+                chunk_index: usize,
+                future: BoxFuture<'a, Result<DownloadingEndCause, DownloadError>>,
+            },
         }
 
-        for _ in 0..(self.connection_count() - 1) {
-            is_iter_all_chunk = !self
+        enum RunFutureResult {
+            DownloadConnectionCountChanged {
+                receiver: sync::watch::Receiver<NonZeroU8>,
+                download_connection_count: u8,
+            },
+            ChunkDownloadEnd {
+                chunk_index: usize,
+                result: Result<DownloadingEndCause, DownloadError>,
+            },
+        }
+
+        impl Future for RunFuture<'_> {
+            type Output = RunFutureResult;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                match self.get_mut() {
+                    RunFuture::DownloadConnectionCountChanged(future) => {
+                        future.poll_unpin(cx).map(|r| RunFutureResult::DownloadConnectionCountChanged {
+                            receiver: r.0,
+                            download_connection_count: r.1,
+                        })
+                    }
+                    RunFuture::ChunkDownloadEnd {
+                        future,
+                        chunk_index
+                    } => {
+                        future.poll_unpin(cx).map(|result| RunFutureResult::ChunkDownloadEnd {
+                            chunk_index: chunk_index.clone(),
+                            result,
+                        })
+                    }
+                }
+            }
+        }
+
+        let mut futures_unordered = FuturesUnordered::new();
+
+
+        let file = Arc::new(Mutex::new(file));
+        let download_next_chunk = || async {
+            match self
                 .download_next_chunk(
                     file.clone(),
-                    chunk_message_sender.clone(),
                     downloaded_len_receiver.clone(),
                     Self::clone_request(&request),
                 )
-                .await;
-            if is_iter_all_chunk {
-                break;
+                .await {
+                None => {
+                    None
+                }
+                Some((chunk_index, future)) => {
+                    Some(RunFuture::ChunkDownloadEnd {
+                        chunk_index,
+                        future: future.boxed(),
+                    })
+                }
+            }
+        };
+        match download_next_chunk().await {
+            None => {
+                #[cfg(feature = "tracing")]
+                tracing::trace!("No Chunk!");
+                return Ok(DownloadingEndCause::DownloadFinished);
+            }
+            Some(future) => futures_unordered.push(future)
+        }
+
+        let mut is_iter_finished = false;
+        for _ in 0..(self.connection_count() - 1) {
+            match download_next_chunk().await {
+                None => {
+                    is_iter_finished = true;
+                    break;
+                }
+                Some(future) => futures_unordered.push(future)
             }
         }
 
-        let connection_count_handle_future = {
-            let mut download_connection_count_receiver =
-                self.download_connection_count_receiver.clone();
-            let chunk_message_sender = chunk_message_sender.clone();
-            let file = file.clone();
-            let downloaded_len_receiver = downloaded_len_receiver.clone();
-            let request = Self::clone_request(&request);
+        futures_unordered.push(RunFuture::DownloadConnectionCountChanged({
+            let mut receiver = self.download_connection_count_receiver.clone();
             async move {
-                while download_connection_count_receiver.changed().await.is_ok() {
-                    let download_connection_count =
-                        download_connection_count_receiver.borrow().get();
-                    let current_count = self.get_chunks().await.len();
-                    let diff = download_connection_count as i16 - current_count as i16;
-                    if diff >= 0 {
-                        self.superfluities_connection_count
-                            .store(0, Ordering::SeqCst);
-                        for _ in 0..diff {
-                            if !self
-                                .download_next_chunk(
-                                    file.clone(),
-                                    chunk_message_sender.clone(),
-                                    downloaded_len_receiver.clone(),
-                                    Self::clone_request(&request),
-                                )
-                                .await
-                            {
-                                break;
-                            }
-                        }
-                    } else {
-                        self.superfluities_connection_count
-                            .store(diff.unsigned_abs() as u8, Ordering::SeqCst);
-                    }
-                }
-                DownloadingEndCause::Cancelled
-            }
-        };
+                let _ = receiver.changed().await;
+                let i = receiver.borrow().get();
+                (receiver, i)
+            }.boxed()
+        }));
 
-        let message_handle_future = async move {
-            let chunk_message_sender = chunk_message_sender;
-            while let Some(message_info) = chunk_message_receiver.recv().await {
-                match message_info.kind {
-                    ChunkMessageKind::DownloadFinished => {
-                        #[cfg(feature = "tracing")]
-                            let span = tracing::info_span!(
-                            "Start Handle DownloadFinished",
-                            chunk_inde = message_info.chunk_index
-                        );
-                        #[cfg(feature = "tracing")]
-                            let _ = span.enter();
-                        let (downloading_chunk_count, chunk_item) =
-                            self.remove_chunk(message_info.chunk_index).await;
-                        let _ = chunk_item
-                            .ok_or(DownloadError::ChunkRemoveFailed(message_info.chunk_index))?;
+        let run_future = async {
+            while let Some(result) = futures_unordered.next().await {
+                match result {
+                    RunFutureResult::DownloadConnectionCountChanged {
+                        download_connection_count,
+                        mut receiver
+                    } => {
+                        let current_count = self.get_chunks().await.len();
+                        let diff = download_connection_count as i16 - current_count as i16;
+                        if diff >= 0 {
+                            self.superfluities_connection_count
+                                .store(0, Ordering::SeqCst);
+                            for _ in 0..diff {
+                                match download_next_chunk().await {
+                                    None => {
+                                        is_iter_finished = true;
+                                        break;
+                                    }
+                                    Some(future) => futures_unordered.push(future)
+                                }
+                            }
+                        } else {
+                            self.superfluities_connection_count
+                                .store(diff.unsigned_abs() as u8, Ordering::SeqCst);
+                        }
+
+                        futures_unordered.push(RunFuture::DownloadConnectionCountChanged(async move {
+                            let _ = receiver.changed().await;
+                            let i = receiver.borrow().get();
+                            (receiver, i)
+                        }.boxed()))
+                    }
+                    RunFutureResult::ChunkDownloadEnd {
+                        chunk_index,
+                        result: Ok(DownloadingEndCause::DownloadFinished)
+                    } => {
+                        let (downloading_chunk_count, chunk_item) = self.remove_chunk(chunk_index).await;
+                        let _ = chunk_item.ok_or(DownloadError::ChunkRemoveFailed(chunk_index))?;
                         if _breakpoint_resume {
                             self.save_spec_data().await;
                         }
-                        if is_iter_all_chunk {
+                        if is_iter_finished {
                             if downloading_chunk_count == 0 {
                                 debug_assert_eq!(
                                     self.chunk_iterator.content_length,
@@ -255,51 +270,40 @@ impl ChunkManager {
                                 break;
                             }
                         } else if self.superfluities_connection_count.load(Ordering::SeqCst) == 0 {
-                            is_iter_all_chunk = !self
-                                .download_next_chunk(
-                                    file.clone(),
-                                    chunk_message_sender.clone(),
-                                    downloaded_len_receiver.clone(),
-                                    Self::clone_request(&request),
-                                )
-                                .await;
+                            match download_next_chunk().await {
+                                None => {
+                                    is_iter_finished = true;
+                                    break;
+                                }
+                                Some(future) => futures_unordered.push(future)
+                            }
                         } else {
                             self.superfluities_connection_count
                                 .fetch_sub(1, Ordering::SeqCst);
                         }
                     }
-                    ChunkMessageKind::Error(err) => {
-                        if _breakpoint_resume {
-                            self.save_spec_data().await;
-                        }
+                    RunFutureResult::ChunkDownloadEnd {
+                        chunk_index,
+                        result: Err(err)
+                    } => {
                         self.cancel_token.cancel();
                         return Err(err);
                     }
-                    ChunkMessageKind::DownloadCancelled => {
-                        if _breakpoint_resume {
-                            self.save_spec_data().await;
-                        }
-                    }
-                    ChunkMessageKind::DownloadLenAppend(append_len) => {
-                        self.downloaded_len_sender
-                            .send_modify(|n| *n += append_len as u64);
-                    }
+                    _ => {}
                 }
             }
             Result::<DownloadingEndCause, DownloadError>::Ok(DownloadingEndCause::DownloadFinished)
         };
 
-        let cancellation_token = self.cancel_token.clone();
-        let r = select! {
-            r = connection_count_handle_future => {Ok(r)}
-            r = message_handle_future => {r}
-            _ = cancellation_token.cancelled() => {
+        let cancel_token = self.cancel_token.clone();
+        select! {
+            r = run_future => {r}
+            _ = cancel_token.cancelled() => {
                 Ok(DownloadingEndCause::Cancelled)
             }
-        };
-        r
+        }
     }
-    async fn insert_chunk(&self, item: DownloadedChunkItem) {
+    async fn insert_chunk(&self, item: Arc<ChunkItem>) {
         let mut downloading_chunks = self.downloading_chunks.lock().await;
         downloading_chunks.insert(item.chunk_info.index, item);
     }
@@ -310,7 +314,7 @@ impl ChunkManager {
             .lock()
             .await
             .values()
-            .map(|n| n.chunk_item.clone())
+            .cloned()
             .collect();
         downloading_chunks.sort_by(|a, b| a.chunk_info.range.start.cmp(&b.chunk_info.range.start));
         downloading_chunks
@@ -367,7 +371,7 @@ impl ChunkManager {
         }
     }
 
-    async fn remove_chunk(&self, index: usize) -> (usize, Option<DownloadedChunkItem>) {
+    async fn remove_chunk(&self, index: usize) -> (usize, Option<Arc<ChunkItem>>) {
         let mut downloading_chunks = self.downloading_chunks.lock().await;
         let removed = downloading_chunks.remove(&index);
         (downloading_chunks.len(), removed)
@@ -377,25 +381,84 @@ impl ChunkManager {
     async fn download_next_chunk(
         &self,
         file: Arc<Mutex<File>>,
-        sender: sync::mpsc::Sender<ChunkMessageInfo>,
         downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
         request: Box<Request>,
-    ) -> bool {
+    ) -> Option<(usize, impl Future<Output=Result<DownloadingEndCause, DownloadError>>)> {
         if let Some(chunk_info) = self.chunk_iterator.next() {
             let chunk_item = Arc::new(ChunkItem::new(
                 chunk_info,
                 self.cancel_token.child_token(),
                 self.client.clone(),
-                sender,
                 file,
-                downloaded_len_receiver,
                 self.etag.clone(),
             ));
-            let item = chunk_item.start_download(request, self.retry_count);
-            self.insert_chunk(item).await;
-            true
+            self.insert_chunk(chunk_item.clone()).await;
+            Some((chunk_item.chunk_info.index, chunk_item.download_chunk(request, self.retry_count, Some(LenChangedNotify {
+                notify: downloaded_len_receiver,
+                downloaded_len_sender: self.downloaded_len_sender.clone(),
+            }))))
         } else {
-            false
+            None
         }
+    }
+}
+
+pub struct LenChangedNotify {
+    downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
+    notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
+}
+
+impl DownloadedLenChangeNotify for LenChangedNotify {
+    fn receive_len(&self, len: usize) -> OptionFuture<BoxFuture<()>> {
+        self.downloaded_len_sender
+            .send_modify(|n| *n += len as u64);
+        if let Some(notify) = self.notify.as_ref() {
+            notify.receive_len(len)
+        } else {
+            None.into()
+        }
+    }
+}
+
+
+#[cfg(feature = "async-graphql")]
+pub struct DownloadChunkObject(pub Arc<ChunkItem>);
+
+#[cfg(feature = "async-graphql")]
+impl From<Arc<ChunkItem>> for DownloadChunkObject {
+    fn from(value: Arc<ChunkItem>) -> Self {
+        DownloadChunkObject(value)
+    }
+}
+
+#[cfg(feature = "async-graphql")]
+#[async_graphql::Object]
+impl DownloadChunkObject {
+    pub async fn index(&self) -> usize {
+        self.0.chunk_info.index
+    }
+    pub async fn start(&self) -> u64 {
+        self.0.chunk_info.range.start
+    }
+    pub async fn end(&self) -> u64 {
+        self.0.chunk_info.range.end
+    }
+    pub async fn len(&self) -> u64 {
+        self.0.chunk_info.range.len()
+    }
+    pub async fn downloaded_len(&self) -> u64 {
+        self.0.downloaded_len.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg_attr(feature = "async-graphql", async_graphql::ComplexObject)]
+impl ChunksInfo {
+    #[cfg(feature = "async-graphql")]
+    pub async fn downloading_chunks(&self) -> Vec<DownloadChunkObject> {
+        self.downloading_chunks
+            .iter()
+            .cloned()
+            .map(Into::into)
+            .collect()
     }
 }

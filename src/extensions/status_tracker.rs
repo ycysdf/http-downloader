@@ -7,7 +7,7 @@ use futures_util::FutureExt;
 use tokio::{select, sync};
 
 use crate::{
-    DownloadController, DownloadError, DownloadExtension, DownloadParams, DownloadStartError,
+    DownloadController, DownloadError, DownloadExtensionOld, DownloadContext, DownloadStartError,
     DownloadStopError, DownloadingEndCause, HttpFileDownloader,
 };
 
@@ -78,7 +78,7 @@ impl DownloadStatusTrackerExtension {
     }
 }
 
-impl<DC: DownloadController> DownloadExtension<DC> for DownloadStatusTrackerExtension {
+impl<DC: DownloadController> DownloadExtensionOld<DC> for DownloadStatusTrackerExtension {
     type DownloadController = DownloadStatusTrackerController<DC>;
     type ExtensionState = DownloadStatusTrackerState;
 
@@ -123,7 +123,7 @@ impl<DC: DownloadController> DownloadStatusTrackerController<DC> {
 impl<DC: DownloadController> DownloadController for DownloadStatusTrackerController<DC> {
     async fn download(
         self: Arc<Self>,
-        mut params: DownloadParams,
+        mut params: DownloadContext,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
     {
         match self.status() {

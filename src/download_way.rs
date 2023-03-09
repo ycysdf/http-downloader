@@ -35,7 +35,7 @@ impl SingleDownload {
 
     pub async fn download(
         &self,
-        file: Arc<Mutex<File>>,
+        mut file: File,
         response: Box<Response>,
         downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
         buffer_size: usize,
@@ -58,7 +58,6 @@ impl SingleDownload {
 
                 // 超过缓冲大小就写入磁盘
                 if chunk_bytes.len() + len > chunk_bytes.capacity() {
-                    let mut file = file.lock().await;
                     file.write_all(&chunk_bytes).await?;
                     file.flush().await?;
                     file.sync_all().await?;
@@ -68,10 +67,7 @@ impl SingleDownload {
                 chunk_bytes.extend(bytes);
                 self.downloaded_len_sender.send_modify(|n| *n += len as u64);
                 if let Some(downloaded_len_receiver) = downloaded_len_receiver.as_ref() {
-                    match downloaded_len_receiver.receive_len(len) {
-                        None => {}
-                        Some(r) => r.await,
-                    };
+                    downloaded_len_receiver.receive_len(len).await;
                 }
             }
             Result::<(), DownloadError>::Ok(())
@@ -79,7 +75,6 @@ impl SingleDownload {
         Ok(select! {
             r = future => {
                 r?;
-                let mut file = file.lock().await;
                 file.write_all(&chunk_bytes).await?;
                 file.flush().await?;
                 file.sync_all().await?;

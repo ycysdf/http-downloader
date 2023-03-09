@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, OptionFuture};
 use futures_util::FutureExt;
 
-use crate::{DownloadController, DownloadedLenChangeNotify, DownloadError, DownloadExtension, DownloadingEndCause, DownloadParams, DownloadStartError, DownloadStopError, HttpFileDownloader};
+use crate::{DownloadController, DownloadedLenChangeNotify, DownloadError, DownloadExtensionOld, DownloadingEndCause, DownloadContext, DownloadStartError, DownloadStopError, HttpFileDownloader};
 
 pub struct DownloadSpeedLimiterExtension<Limiter: SpeedLimiter> {
     limiter: Arc<Limiter>,
@@ -45,7 +45,7 @@ pub struct DownloadSpeedLimiterController<DC: DownloadController, Limiter: Speed
     speed_limiter: Arc<Limiter>,
 }
 
-impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadExtension<DC> for DownloadSpeedLimiterExtension<Limiter> {
+impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadExtensionOld<DC> for DownloadSpeedLimiterExtension<Limiter> {
     type DownloadController = DownloadSpeedLimiterController<DC, Limiter>;
     type ExtensionState = DownloadSpeedLimiterState<Limiter>;
 
@@ -75,8 +75,32 @@ pub trait SpeedLimiter: DownloadedLenChangeNotify + 'static {
 
 impl DownloadedLenChangeNotify for DefaultSpeedLimiter {
     #[inline]
-    fn receive_len(&self, len: usize) -> Option<BoxFuture<()>> {
-        self.wait(len).map(|n| n.boxed())
+    fn receive_len(&self, len: usize) -> OptionFuture<BoxFuture<()>> {
+        let byte_count_per = self.byte_count_per.load(Ordering::Relaxed);
+        // 0 表示不限速
+        if byte_count_per == 0 {
+            return None.into();
+        }
+        let cur_read = self.cur_read.fetch_add(len, Ordering::SeqCst);
+
+        if cur_read < byte_count_per {
+            return None.into();
+        }
+
+        Some(async move {
+            let mut last_instant = self.last_instant.lock().await;
+            if self.cur_read.load(Ordering::SeqCst) < byte_count_per {
+                return;
+            }
+            let elapsed_millis = last_instant.elapsed();
+            if elapsed_millis.as_millis() < LIMIT_INTERVAL as u128 {
+                let duration = Duration::from_millis(LIMIT_INTERVAL) - elapsed_millis;
+                // tracing::info!("sleep duration:{duration:?}");
+                tokio::time::sleep(duration).await;
+            }
+            *last_instant = Instant::now();
+            self.cur_read.fetch_sub(byte_count_per, Ordering::SeqCst);
+        }.boxed()).into()
     }
 }
 
@@ -118,42 +142,13 @@ impl DefaultSpeedLimiter {
     fn handle_byte_count_per(byte_count_per: Option<usize>) -> usize {
         byte_count_per.map(|n| ((n as i64) * (LIMIT_INTERVAL as i64 / 1000_i64)) as usize).unwrap_or(0)
     }
-
-    #[inline]
-    pub fn wait(&self, len: usize) -> Option<impl Future<Output=()> + '_> {
-        let byte_count_per = self.byte_count_per.load(Ordering::Relaxed);
-        // 0 表示不限速
-        if byte_count_per == 0 {
-            return None;
-        }
-        let cur_read = self.cur_read.fetch_add(len, Ordering::SeqCst);
-
-        if cur_read < byte_count_per {
-            return None;
-        }
-
-        Some(async move {
-            let mut last_instant = self.last_instant.lock().await;
-            if self.cur_read.load(Ordering::SeqCst) < byte_count_per {
-                return;
-            }
-            let elapsed_millis = last_instant.elapsed();
-            if elapsed_millis.as_millis() < LIMIT_INTERVAL as u128 {
-                let duration = Duration::from_millis(LIMIT_INTERVAL) - elapsed_millis;
-                // tracing::info!("sleep duration:{duration:?}");
-                tokio::time::sleep(duration).await;
-            }
-            *last_instant = Instant::now();
-            self.cur_read.fetch_sub(byte_count_per, Ordering::SeqCst);
-        })
-    }
 }
 
 #[async_trait]
 impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadController for DownloadSpeedLimiterController<DC, Limiter> {
     async fn download(
         self: Arc<Self>,
-        mut params: DownloadParams,
+        mut params: DownloadContext,
     ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
         params.downloaded_len_change_notify = Some(self.speed_limiter.clone());
         self.speed_limiter.reset().await;

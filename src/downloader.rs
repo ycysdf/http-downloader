@@ -6,9 +6,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
-use async_trait::async_trait;
-use futures_util::future::BoxFuture;
-use futures_util::FutureExt;
+use futures_util::{FutureExt, TryFutureExt};
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
 use headers::HeaderMapExt;
@@ -16,7 +14,6 @@ use parking_lot::RwLock;
 use thiserror::Error;
 use tokio::{io, sync};
 use tokio::io::AsyncSeekExt;
-use tokio::sync::Mutex;
 use tokio::sync::watch::error::SendError;
 use tokio::task::JoinError;
 use tokio::time::Instant;
@@ -24,10 +21,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::Instrument;
 
-use crate::{
-    ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadController,
-    DownloadParams, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload,
-};
+use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadArchiveData, DownloadController, DownloadedLenChangeNotify, DownloaderWrapper, DownloadFuture, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
 #[cfg(feature = "status-tracker")]
 use crate::status_tracker::DownloaderStatus;
 
@@ -81,6 +75,14 @@ pub enum DownloadError {
 }
 
 #[derive(Error, Debug)]
+pub enum DownloadToEndError {
+    #[error("{:?}", .0)]
+    DownloadStartError(#[from] DownloadStartError),
+    #[error("{:?}", .0)]
+    DownloadError(#[from] DownloadError),
+}
+
+#[derive(Error, Debug)]
 pub enum DownloadStopError {
     #[error("recv error")]
     RecvError(#[from] sync::oneshot::error::RecvError),
@@ -126,36 +128,42 @@ impl DownloadingState {
 }
 
 pub struct HttpFileDownloader {
-    pub config: Box<HttpDownloadConfig>,
+    pub downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>>,
+    pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
+    pub archive_data: Option<Box<DownloadArchiveData>>,
+    pub config: Arc<HttpDownloadConfig>,
     pub downloaded_len_receiver: sync::watch::Receiver<u64>,
-    content_length: AtomicU64,
+    content_length: Arc<AtomicU64>,
     client: reqwest::Client,
-    downloading_state: RwLock<
+    downloading_state: Arc<RwLock<
         Option<(
             sync::oneshot::Receiver<DownloadingEndCause>,
             Arc<DownloadingState>,
         )>,
-    >,
+    >>,
     downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
-    pub cancel_token: Mutex<CancellationToken>,
+    pub cancel_token: CancellationToken,
     total_size_semaphore: Arc<sync::Semaphore>,
 }
 
 impl HttpFileDownloader {
-    pub fn new(client: reqwest::Client, config: Box<HttpDownloadConfig>) -> Self {
+    pub fn new(client: reqwest::Client, config: Arc<HttpDownloadConfig>) -> Self {
         let cancel_token = CancellationToken::new();
         let (downloaded_len_sender, downloaded_len_receiver) = sync::watch::channel::<u64>(0);
         let total_size_semaphore = Arc::new(sync::Semaphore::new(0));
 
         Self {
+            downloading_state_oneshot_vec: vec![],
+            downloaded_len_change_notify: None,
+            archive_data: None,
             config,
             total_size_semaphore,
             content_length: Default::default(),
             client,
-            downloading_state: RwLock::new(None),
+            downloading_state: Default::default(),
             downloaded_len_receiver,
             downloaded_len_sender: Arc::new(downloaded_len_sender),
-            cancel_token: Mutex::new(cancel_token),
+            cancel_token,
         }
     }
 
@@ -333,8 +341,7 @@ impl HttpFileDownloader {
     }
 
     pub(crate) async fn download(
-        self: Arc<Self>,
-        params: DownloadParams,
+        &mut self,
     ) -> Result<
         impl Future<Output=Result<DownloadingEndCause, DownloadError>> + 'static,
         DownloadStartError,
@@ -349,7 +356,7 @@ impl HttpFileDownloader {
         } else if !self.config.save_dir.exists() {
             return Err(DownloadStartError::DirectoryDoesNotExist);
         }
-        Ok(self.start_download(params))
+        Ok(self.start_download())
     }
 
     pub fn take_downloading_state(
@@ -364,9 +371,7 @@ impl HttpFileDownloader {
 
     pub async fn cancel(&self) -> Result<(), DownloadStopError> {
         {
-            let mut cancel_token = self.cancel_token.lock().await;
-            cancel_token.cancel();
-            *cancel_token = CancellationToken::new();
+            self.cancel_token.cancel();
         }
         if let Some((receiver, _downloading_state)) = self.take_downloading_state() {
             match receiver.await? {
@@ -380,249 +385,229 @@ impl HttpFileDownloader {
         }
     }
 
-    fn handle_setup_err(&self) {
-        self.total_size_semaphore.add_permits(1);
-    }
     //noinspection RsExternalLinter
-    #[inline]
-    async fn start_download(
-        self: Arc<Self>,
-        DownloadParams {
-            downloaded_len_change_notify,
-            archive_data,
-            downloading_state_oneshot_vec,
-            breakpoint_resume,
-            ..
-        }: DownloadParams,
-    ) -> Result<DownloadingEndCause, DownloadError> {
-        let cancel_token = self.cancel_token.lock().await.clone();
-        let request = self.config.create_http_request();
-        let response = self.client.execute(request);
-        #[cfg(feature = "tracing")]
-            let response = response.instrument(tracing::info_span!("request for content_length"));
-
-        let response = match response.await {
-            Ok(response) => response,
-            Err(err) => {
-                self.handle_setup_err();
-                return Err(err.into());
-            }
-        };
-        let response = match response.error_for_status() {
-            Ok(response) => response,
-            Err(err) => {
-                self.handle_setup_err();
-                return Err(err.into());
-            }
-        };
-        let etag = {
-            if self.config.etag.is_some() {
-                let etag = response.headers().typed_get::<headers::ETag>();
-                if etag == self.config.etag {
-                    #[cfg(feature = "tracing")]
-                    tracing::trace!(
-                        "etag mismatching,your etag: {:?} , current etag:{:?}",
-                        self.config.etag,
-                        etag
-                    );
-                    self.total_size_semaphore.add_permits(1);
-                    self.handle_setup_err();
-                    return Err(DownloadError::ServerFileAlreadyChanged);
-                }
-                etag
-            } else {
-                None
-            }
-        };
-        let mut content_length = response
-            .headers()
-            .typed_get::<headers::ContentLength>()
-            .map(|n| n.0);
-        if self.config.handle_zero_content {
-            content_length = content_length.and_then(|n| if n == 0 { None } else { Some(n) });
+    fn start_download(
+        &mut self,
+    ) -> impl Future<Output=Result<DownloadingEndCause, DownloadError>> + 'static {
+        if self.cancel_token.is_cancelled() {
+            self.cancel_token = CancellationToken::new();
         }
-        let accept_ranges = response.headers().typed_get::<headers::AcceptRanges>();
+        let config = self.config.clone();
+        let client = self.client.clone();
+        let total_size_semaphore = self.total_size_semaphore.clone();
+        let content_length_arc = self.content_length.clone();
+        let downloading_state = self.downloading_state.clone();
+        let downloaded_len_change_notify = self.downloaded_len_change_notify.take();
+        let archive_data = self.archive_data.take();
+        let downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>> = self.downloading_state_oneshot_vec.drain(..).collect();
+        let downloaded_len_sender = self.downloaded_len_sender.clone();
+        let cancel_token = self.cancel_token.clone();
 
-        if let Some(content_length) = content_length {
-            if content_length == 0 {
-                self.handle_setup_err();
-                return Err(DownloadError::ContentLengthInvalid);
-            }
-        }
-        self.content_length
-            .store(content_length.unwrap_or(0), Ordering::Relaxed);
-        self.total_size_semaphore.add_permits(1);
-
-        let mut options = std::fs::OpenOptions::new();
-        (self.config.open_option)(&mut options);
-        let mut file = tokio::fs::OpenOptions::from(options)
-            .open(self.get_file_path())
-            .await?;
-        if self.config.set_len_in_advance {
-            file.set_len(content_length.unwrap()).await?
-        }
-        file.seek(SeekFrom::Start(0)).await?;
-
-        let is_ranges_bytes_none = accept_ranges.is_none();
-        let is_ranges_bytes =
-            !is_ranges_bytes_none && accept_ranges.unwrap() == headers::AcceptRanges::bytes();
-        let downloading_duration = archive_data
-            .as_ref()
-            .map(|n| n.downloading_duration)
-            .unwrap_or(0);
-        let download_way = {
-            if content_length.is_some()
-                && (if self.config.strict_check_accept_ranges {
-                is_ranges_bytes
-            } else {
-                is_ranges_bytes_none || is_ranges_bytes
-            })
-            {
-                let content_length = content_length.unwrap();
-                let chunk_data = archive_data
-                    .and_then(|archive_data| {
-                        self.downloaded_len_sender
-                            .send(archive_data.downloaded_len)
-                            .unwrap_or_else(|_err| {
-                                #[cfg(feature = "tracing")]
-                                tracing::error!("send downloaded_len failed! {}", _err);
-                            });
-                        archive_data.chunk_data.map(|mut data| {
-                            data.remaining.chunk_size = self.config.chunk_size.get();
-                            data
-                        })
-                    })
-                    .unwrap_or_else(|| ChunkData {
-                        iter_count: 0,
-                        remaining: RemainingChunks::new(self.config.chunk_size, content_length),
-                        last_incomplete_chunks: Default::default(),
-                    });
-
-                let chunk_iterator = ChunkIterator::new(content_length, chunk_data);
-                let chunk_manager = Arc::new(ChunkManager::new(
-                    self.config.download_connection_count,
-                    self.client.clone(),
-                    cancel_token,
-                    self.downloaded_len_sender.clone(),
-                    chunk_iterator,
-                    etag,
-                    self.config.request_retry_count,
-                ));
-                DownloadWay::Ranges(chunk_manager)
-            } else {
-                DownloadWay::Single(SingleDownload::new(
-                    cancel_token,
-                    self.downloaded_len_sender.clone(),
-                    content_length,
-                ))
-            }
-        };
-
-        let file = Arc::new(Mutex::new(file));
-
-        let state = DownloadingState {
-            downloading_duration,
-            download_instant: Instant::now(),
-            download_way,
-        };
-
-        let (end_sender, end_receiver) = sync::oneshot::channel();
-
-        let state = Arc::new(state);
-        {
-            let mut guard = self.downloading_state.write();
-            *guard = Some((end_receiver, state.clone()));
-        }
-
-        for oneshot in downloading_state_oneshot_vec {
-            oneshot.send(state.clone()).unwrap_or_else(|_| {
-                #[cfg(feature = "tracing")]
-                tracing::trace!("send download_way failed!");
-            });
-        }
-
-        let dec_result = match &state.download_way {
-            DownloadWay::Ranges(item) => {
-                let request = Box::new(self.config.create_http_request());
-                item.start_download(
-                    file,
-                    request,
-                    downloaded_len_change_notify,
-                    breakpoint_resume,
-                )
-                    .await
-            }
-            DownloadWay::Single(item) => {
-                item.download(
-                    file,
-                    Box::new(response),
-                    downloaded_len_change_notify,
-                    self.config.chunk_size.get(),
-                )
-                    .await
-            }
-        };
-
-        {
-            let mut guard = self.downloading_state.write();
-            *guard = None;
-        }
-        let dec = dec_result?;
-
-        end_sender.send(dec).unwrap_or_else(|_err| {
+        async move {
+            let response = client.execute(config.create_http_request());
             #[cfg(feature = "tracing")]
-            tracing::trace!("DownloadingEndCause Send Failed! {:?}", _err);
-        });
+                let response = response.instrument(tracing::info_span!("request for content_length"));
 
-        Ok(dec)
+            let response = match response.await {
+                Ok(response) => response,
+                Err(err) => {
+                    total_size_semaphore.add_permits(1);
+                    return Err(err.into());
+                }
+            };
+            let response = match response.error_for_status() {
+                Ok(response) => response,
+                Err(err) => {
+                    total_size_semaphore.add_permits(1);
+                    return Err(err.into());
+                }
+            };
+            let etag = {
+                if config.etag.is_some() {
+                    let cur_etag = response.headers().typed_get::<headers::ETag>();
+                    if cur_etag == config.etag {
+                        #[cfg(feature = "tracing")]
+                        tracing::trace!(
+                        "etag mismatching,your etag: {:?} , current etag:{:?}",
+                        config.etag,
+                        cur_etag
+                    );
+                        total_size_semaphore.add_permits(1);
+                        return Err(DownloadError::ServerFileAlreadyChanged);
+                    }
+                    cur_etag
+                } else {
+                    None
+                }
+            };
+            let mut content_length = response
+                .headers()
+                .typed_get::<headers::ContentLength>()
+                .map(|n| n.0);
+            if config.handle_zero_content {
+                content_length = content_length.and_then(|n| if n == 0 { None } else { Some(n) });
+            }
+            let accept_ranges = response.headers().typed_get::<headers::AcceptRanges>();
+
+            if let Some(content_length) = content_length {
+                if content_length == 0 {
+                    total_size_semaphore.add_permits(1);
+                    return Err(DownloadError::ContentLengthInvalid);
+                }
+            }
+            content_length_arc.store(content_length.unwrap_or(0), Ordering::Relaxed);
+            total_size_semaphore.add_permits(1);
+
+            let mut options = std::fs::OpenOptions::new();
+            (config.open_option)(&mut options);
+            let mut file = tokio::fs::OpenOptions::from(options)
+                .open(config.file_path())
+                .await?;
+            if config.set_len_in_advance {
+                file.set_len(content_length.unwrap()).await?
+            }
+            file.seek(SeekFrom::Start(0)).await?;
+
+            let is_ranges_bytes_none = accept_ranges.is_none();
+            let is_ranges_bytes =
+                !is_ranges_bytes_none && accept_ranges.unwrap() == headers::AcceptRanges::bytes();
+            let downloading_duration = archive_data.as_ref()
+                .map(|n| n.downloading_duration)
+                .unwrap_or(0);
+            let download_way = {
+                if content_length.is_some()
+                    && (if config.strict_check_accept_ranges {
+                    is_ranges_bytes
+                } else {
+                    is_ranges_bytes_none || is_ranges_bytes
+                })
+                {
+                    let content_length = content_length.unwrap();
+                    let chunk_data = archive_data
+                        .and_then(|archive_data| {
+                            downloaded_len_sender
+                                .send(archive_data.downloaded_len)
+                                .unwrap_or_else(|_err| {
+                                    #[cfg(feature = "tracing")]
+                                    tracing::error!("send downloaded_len failed! {}", _err);
+                                });
+                            archive_data.chunk_data.map(|mut data| {
+                                data.remaining.chunk_size = config.chunk_size.get();
+                                data
+                            })
+                        })
+                        .unwrap_or_else(|| ChunkData {
+                            iter_count: 0,
+                            remaining: RemainingChunks::new(config.chunk_size, content_length),
+                            last_incomplete_chunks: Default::default(),
+                        });
+
+                    let chunk_iterator = ChunkIterator::new(content_length, chunk_data);
+                    let chunk_manager = Arc::new(ChunkManager::new(
+                        config.download_connection_count,
+                        client,
+                        cancel_token,
+                        downloaded_len_sender,
+                        chunk_iterator,
+                        etag,
+                        config.request_retry_count,
+                    ));
+                    DownloadWay::Ranges(chunk_manager)
+                } else {
+                    DownloadWay::Single(SingleDownload::new(
+                        cancel_token,
+                        downloaded_len_sender,
+                        content_length,
+                    ))
+                }
+            };
+
+            let state = DownloadingState {
+                downloading_duration,
+                download_instant: Instant::now(),
+                download_way,
+            };
+
+            let (end_sender, end_receiver) = sync::oneshot::channel();
+
+            let state = Arc::new(state);
+            {
+                let mut guard = downloading_state.write();
+                *guard = Some((end_receiver, state.clone()));
+            }
+
+            for oneshot in downloading_state_oneshot_vec.into_iter() {
+                oneshot.send(state.clone()).unwrap_or_else(|_| {
+                    #[cfg(feature = "tracing")]
+                    tracing::trace!("send download_way failed!");
+                });
+            }
+
+            let dec_result = match &state.download_way {
+                DownloadWay::Ranges(item) => {
+                    let request = Box::new(config.create_http_request());
+                    item.start_download(
+                        file,
+                        request,
+                        downloaded_len_change_notify,
+                        true, // todo:,
+                    )
+                        .await
+                }
+                DownloadWay::Single(item) => {
+                    item.download(
+                        file,
+                        Box::new(response),
+                        downloaded_len_change_notify,
+                        config.chunk_size.get(),
+                    )
+                        .await
+                }
+            };
+
+            if { downloading_state.read().is_some() } {
+                let mut guard = downloading_state.write();
+                *guard = None;
+            }
+
+            let dec = dec_result?;
+
+            end_sender.send(dec).unwrap_or_else(|_err| {
+                #[cfg(feature = "tracing")]
+                tracing::trace!("DownloadingEndCause Send Failed! {:?}", _err);
+            });
+
+            Ok(dec)
+        }
     }
 }
 
-#[async_trait]
-impl DownloadController for HttpFileDownloader {
-    async fn download(
-        self: Arc<Self>,
-        params: DownloadParams,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
-    {
-        Ok(HttpFileDownloader::download(self, params).await?.boxed())
-    }
-
-    async fn cancel(&self) -> Result<(), DownloadStopError> {
-        Ok(self.cancel().await?)
-    }
+pub struct ExtendedHttpFileDownloader {
+    pub inner: HttpFileDownloader,
+    downloader_wrapper: Box<dyn DownloaderWrapper>,
 }
 
-#[derive(Clone)]
-pub struct ExtensibleHttpFileDownloader {
-    pub inner: Arc<HttpFileDownloader>,
-    download_controller: Arc<dyn DownloadController>,
-}
-
-impl ExtensibleHttpFileDownloader {
+impl ExtendedHttpFileDownloader {
     pub fn new(
-        downloader: Arc<HttpFileDownloader>,
-        download_controller: Arc<dyn DownloadController>,
+        downloader: HttpFileDownloader,
+        downloader_wrapper: Box<dyn DownloaderWrapper>,
     ) -> Self {
         Self {
             inner: downloader,
-            download_controller,
+            downloader_wrapper,
         }
     }
-
-    pub async fn start(
-        &self,
-    ) -> Result<impl Future<Output=Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
-    {
-        let params = DownloadParams::new();
-        let controller = self.download_controller.to_owned();
-        let future = controller.download(params).await?;
-        let r = tokio::spawn(async move { future.await });
-        Ok(async { r.await? })
+    pub async fn prepare_download(&mut self) -> Result<DownloadFuture, DownloadStartError> {
+        let download_future = self.inner.download().await?.boxed();
+        Ok(self.downloader_wrapper.download(download_future).await?)
     }
+
+    pub async fn download_to_end(&mut self) -> Result<DownloadingEndCause, DownloadToEndError> {
+        Ok(self.prepare_download().await?.await?)
+    }
+
     pub async fn cancel(&self) -> Result<(), DownloadStopError> {
-        self.download_controller.cancel().await?;
-        Ok(())
+        Ok(self.downloader_wrapper.cancel(self.inner.cancel().boxed()).await?)
     }
 
     #[inline]
