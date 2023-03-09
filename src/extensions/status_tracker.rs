@@ -2,14 +2,10 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
-use crate::{
-    DownloadController, DownloadError, DownloadExtensionOld, DownloadContext, DownloadStartError,
-    DownloadStopError, DownloadingEndCause, HttpFileDownloader,
-};
+use crate::{DownloadCancelFuture, DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadingEndCause, DownloadStartError, DownloadStopError, HttpFileDownloader};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkItemPendingType {
@@ -78,27 +74,32 @@ impl DownloadStatusTrackerExtension {
     }
 }
 
-impl<DC: DownloadController> DownloadExtensionOld<DC> for DownloadStatusTrackerExtension {
-    type DownloadController = DownloadStatusTrackerController<DC>;
+pub struct DownloadStatusTrackerController {
+    pub status_sender: Arc<DownloadStatusSender>,
+    status_receiver: sync::watch::Receiver<DownloaderStatus>,
+}
+
+impl DownloadStatusTrackerController {
+    pub fn status(&self) -> DownloaderStatus {
+        self.status_receiver.borrow().clone()
+    }
+}
+
+impl DownloadExtensionInstance for DownloadStatusTrackerController {
+    type ExtensionParam = DownloadStatusTrackerExtension;
     type ExtensionState = DownloadStatusTrackerState;
 
-    fn layer(
-        self,
-        downloader: Arc<HttpFileDownloader>,
-        inner: Arc<DC>,
-    ) -> (Arc<Self::DownloadController>, Self::ExtensionState) {
-        drop(downloader);
+    fn new(param: Self::ExtensionParam, _downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
         let (status_sender, status_receiver) = sync::watch::channel(DownloaderStatus::NoStart);
         let status_sender = Arc::new(DownloadStatusSender {
-            log: self.log,
+            log: param.log,
             status_sender,
         });
         (
-            Arc::new(DownloadStatusTrackerController {
-                inner,
+            DownloadStatusTrackerController {
                 status_receiver: status_receiver.clone(),
                 status_sender: status_sender.clone(),
-            }),
+            },
             DownloadStatusTrackerState {
                 status_receiver,
                 status_sender,
@@ -107,25 +108,9 @@ impl<DC: DownloadController> DownloadExtensionOld<DC> for DownloadStatusTrackerE
     }
 }
 
-pub struct DownloadStatusTrackerController<DC: DownloadController> {
-    inner: Arc<DC>,
-    pub status_sender: Arc<DownloadStatusSender>,
-    status_receiver: sync::watch::Receiver<DownloaderStatus>,
-}
-
-impl<DC: DownloadController> DownloadStatusTrackerController<DC> {
-    pub fn status(&self) -> DownloaderStatus {
-        self.status_receiver.borrow().clone()
-    }
-}
-
 #[async_trait]
-impl<DC: DownloadController> DownloadController for DownloadStatusTrackerController<DC> {
-    async fn download(
-        self: Arc<Self>,
-        mut params: DownloadContext,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
-    {
+impl DownloaderWrapper for DownloadStatusTrackerController {
+    async fn prepare_download(&mut self, _downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
         match self.status() {
             DownloaderStatus::Running => return Err(DownloadStartError::AlreadyDownloading),
             DownloaderStatus::Pending(pending_type) => match pending_type {
@@ -140,46 +125,42 @@ impl<DC: DownloadController> DownloadController for DownloadStatusTrackerControl
                 }
                 _ => {}
             },
-            DownloaderStatus::Finished => {
-                #[cfg(feature = "tracing")]
-                tracing::trace!("Restart download!");
-                // return Err(DownloadStartError::AlreadyDownloadFinished)
-            }
             _ => {}
+        };
+        self.status_sender.change_status(DownloaderStatus::Pending(NetworkItemPendingType::Starting));
+        Ok(())
+    }
+
+    async fn handle_prepare_download(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
+        match prepare_download_result {
+            Ok(download_future) => Ok(download_future),
+            Err(err) => {
+                self.status_sender.change_status(DownloaderStatus::Error(err.to_string()));
+                Err(err)
+            }
         }
-        let status_sender = self.status_sender.clone();
-        status_sender.change_status(DownloaderStatus::Pending(NetworkItemPendingType::Starting));
+    }
+
+    async fn download(
+        &mut self,
+        downloader: &mut HttpFileDownloader,
+        mut download_future: DownloadFuture,
+    ) -> Result<DownloadFuture, DownloadStartError> {
+        self.status_sender.change_status(DownloaderStatus::Pending(
+            NetworkItemPendingType::Initializing,
+        ));
         let (download_way_sender, download_way_receiver) = sync::oneshot::channel();
 
-        params
+        downloader
             .downloading_state_oneshot_vec
             .push(download_way_sender);
-        match self.inner.to_owned().download(params).await {
-            Ok(mut receiver) => {
-                status_sender.change_status(DownloaderStatus::Pending(
-                    NetworkItemPendingType::Initializing,
-                ));
-                Ok(async move {
-                    select! {
-                        _ = download_way_receiver => {
-                            status_sender.change_status(DownloaderStatus::Running);
-                        },
-                        r = (&mut receiver) =>{
-                            match &r {
-                                Ok(end_cause) => match end_cause {
-                                    DownloadingEndCause::DownloadFinished => {
-                                        status_sender.change_status(DownloaderStatus::Finished)
-                                    }
-                                    DownloadingEndCause::Cancelled => {
-                                        status_sender.change_status(DownloaderStatus::NoStart)
-                                    }
-                                },
-                                Err(err) => status_sender.change_status(DownloaderStatus::Error(err.to_string())),
-                            };
-                            return r;
-                        }
-                    }
-                    let r = receiver.await;
+        let status_sender = self.status_sender.clone();
+        Ok(async move {
+            select! {
+                _ = download_way_receiver => {
+                    status_sender.change_status(DownloaderStatus::Running);
+                },
+                r = (&mut download_future) =>{
                     match &r {
                         Ok(end_cause) => match end_cause {
                             DownloadingEndCause::DownloadFinished => {
@@ -191,21 +172,29 @@ impl<DC: DownloadController> DownloadController for DownloadStatusTrackerControl
                         },
                         Err(err) => status_sender.change_status(DownloaderStatus::Error(err.to_string())),
                     };
-                    r
+                    return r;
                 }
-                    .boxed())
             }
-            Err(err) => {
-                status_sender.change_status(DownloaderStatus::Error(err.to_string()));
-                Err(err)
-            }
+            let r = download_future.await;
+            match &r {
+                Ok(end_cause) => match end_cause {
+                    DownloadingEndCause::DownloadFinished => {
+                        status_sender.change_status(DownloaderStatus::Finished)
+                    }
+                    DownloadingEndCause::Cancelled => {
+                        status_sender.change_status(DownloaderStatus::NoStart)
+                    }
+                },
+                Err(err) => status_sender.change_status(DownloaderStatus::Error(err.to_string())),
+            };
+            r
         }
+            .boxed())
     }
 
-    async fn cancel(&self) -> Result<(), DownloadStopError> {
+    async fn cancel(&self, cancel_future: DownloadCancelFuture<'_>) -> Result<(), DownloadStopError> {
         self.status_sender
             .change_status(DownloaderStatus::Pending(NetworkItemPendingType::Stopping));
-        self.inner.cancel().await?;
-        Ok(())
+        cancel_future.await
     }
 }

@@ -6,11 +6,10 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
-use crate::{ChunkInfo, ChunkRange, DownloadArchiveData, DownloadController, DownloadError, DownloadExtensionOld, DownloadingEndCause, DownloadingState, DownloadContext, DownloadStartError, DownloadStopError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
+use crate::{BreakpointResume, ChunkInfo, ChunkRange, DownloadArchiveData, DownloadError, DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadingEndCause, DownloadingState, DownloadStartError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 
 pub enum FileSave {
     Absolute(PathBuf),
@@ -61,29 +60,29 @@ pub trait DownloadDataArchiverBuilder {
     fn build(self, config: &HttpDownloadConfig) -> Self::DownloadDataArchiver;
 }
 
-impl<DC: DownloadController, T: DownloadDataArchiverBuilder> DownloadExtensionOld<DC>
-for DownloadBreakpointResumeExtension<T>
-{
-    type DownloadController = DownloadBreakpointResumeController<DC, T::DownloadDataArchiver>;
-    type ExtensionState = DownloadBreakpointResumeState<T::DownloadDataArchiver>;
+pub struct DownloadBreakpointResumeState<T: DownloadDataArchiverBuilder> {
+    pub download_archiver: Arc<T::DownloadDataArchiver>,
+}
 
-    fn layer(
-        self,
-        downloader: Arc<HttpFileDownloader>,
-        inner: Arc<DC>,
-    ) -> (Arc<Self::DownloadController>, Self::ExtensionState) {
+pub struct DownloadBreakpointResumeExtensionInstance<T: DownloadDataArchiverBuilder> {
+    pub download_archiver: Arc<T::DownloadDataArchiver>,
+}
+
+impl<T: DownloadDataArchiverBuilder+'static> DownloadExtensionInstance for DownloadBreakpointResumeExtensionInstance<T>
+{
+    type ExtensionParam = DownloadBreakpointResumeExtension<T>;
+    type ExtensionState = DownloadBreakpointResumeState<T>;
+
+    fn new(param: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
         let DownloadBreakpointResumeExtension {
             download_archiver_builder,
-        } = self;
+        } = param;
 
-        let download_archiver = download_archiver_builder.build(&downloader.config);
-        let download_archiver = Arc::new(download_archiver);
+        let download_archiver = Arc::new(download_archiver_builder.build(&downloader.config));
         (
-            Arc::new(DownloadBreakpointResumeController {
-                inner,
-                // archive_data_sender: sender,
+            DownloadBreakpointResumeExtensionInstance {
                 download_archiver: download_archiver.clone(),
-            }),
+            },
             DownloadBreakpointResumeState {
                 download_archiver,
             },
@@ -91,39 +90,35 @@ for DownloadBreakpointResumeExtension<T>
     }
 }
 
-pub struct DownloadBreakpointResumeState<T: DownloadDataArchiver> {
-    pub download_archiver: Arc<T>,
-}
-
-pub struct DownloadBreakpointResumeController<DC: DownloadController, T: DownloadDataArchiver> {
-    inner: Arc<DC>,
-    pub download_archiver: Arc<T>,
-}
-
 #[async_trait]
-impl<DC: DownloadController, T: DownloadDataArchiver> DownloadController
-for DownloadBreakpointResumeController<DC, T>
+impl<T: DownloadDataArchiverBuilder+'static> DownloaderWrapper for DownloadBreakpointResumeExtensionInstance<T>
 {
-    async fn download(
-        self: Arc<Self>,
-        mut params: DownloadContext,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>
-    {
-        let (sender, receiver) = sync::oneshot::channel();
-        params.breakpoint_resume = true;
-        params.archive_data = self.download_archiver.load().await?;
-        let is_resume = params.archive_data.is_some();
-
-        params.downloading_state_oneshot_vec.push(sender);
-        let download_future = match self.inner.to_owned().download(params).await {
-            Ok(r) => r,
+    async fn handle_prepare_download(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
+        match prepare_download_result {
+            Ok(download_future) => Ok(download_future),
             Err(err) => {
                 self.download_archiver
                     .download_ended(DownloadEndInfo::StartError(&err))
                     .await;
                 return Err(err);
             }
-        };
+        }
+    }
+
+    async fn download(
+        &mut self,
+        downloader: &mut HttpFileDownloader,
+        download_future: DownloadFuture,
+    ) -> Result<DownloadFuture, DownloadStartError>
+    {
+        let (sender, receiver) = sync::oneshot::channel();
+
+        let breakpoint_resume = Arc::new(BreakpointResume::default());
+        let notifies = breakpoint_resume.clone();
+        downloader.breakpoint_resume = Some(breakpoint_resume);
+        downloader.archive_data = self.download_archiver.load().await?;
+        downloader.downloading_state_oneshot_vec.push(sender);
+        let is_resume = downloader.archive_data.is_some();
 
         let future = {
             let download_archiver = self.download_archiver.clone();
@@ -135,7 +130,7 @@ for DownloadBreakpointResumeController<DC, T>
                     .download_started(&downloading_state, is_resume)
                     .await?;
                 if let DownloadWay::Ranges(chunk_manager) = &downloading_state.download_way {
-                    let mut notified = chunk_manager.data_archive_notify.notified();
+                    let mut notified = notifies.data_archive_notify.notified();
 
                     loop {
                         notified.await;
@@ -165,8 +160,8 @@ for DownloadBreakpointResumeController<DC, T>
                             downloading_duration: downloading_state.get_current_downloading_duration(),
                             chunk_data: Some(data),
                         };
-                        notified = chunk_manager.data_archive_notify.notified();
-                        chunk_manager.archive_complete_notify.notify_one();
+                        notified = notifies.data_archive_notify.notified();
+                        notifies.archive_complete_notify.notify_one();
                         download_archiver.save(Box::new(archive_data)).await?;
                     }
                 } else {
@@ -175,20 +170,17 @@ for DownloadBreakpointResumeController<DC, T>
             }
         };
 
+        let download_archiver = self.download_archiver.clone();
         #[allow(clippy::collapsible_match)]
         Ok(async move {
             select! {
                 r = future => {r},
                 r = download_future => {
-                    self.download_archiver.download_ended(DownloadEndInfo::DownloadEnd(&r)).await;
+                    download_archiver.download_ended(DownloadEndInfo::DownloadEnd(&r)).await;
                     r
                 }
             }
         }
             .boxed())
-    }
-
-    async fn cancel(&self) -> Result<(), DownloadStopError> {
-        self.inner.cancel().await
     }
 }

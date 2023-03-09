@@ -8,7 +8,6 @@ use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::select;
 use tokio::sync;
-use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::{ChunkManager, DownloadError, DownloadedLenChangeNotify, DownloadingEndCause};

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::Result;
-use futures_util::{FutureExt, TryFutureExt};
+use futures_util::future::BoxFuture;
+use futures_util::FutureExt;
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
 use headers::HeaderMapExt;
@@ -21,7 +22,7 @@ use tokio_util::sync::CancellationToken;
 #[cfg(feature = "tracing")]
 use tracing::Instrument;
 
-use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadArchiveData, DownloadController, DownloadedLenChangeNotify, DownloaderWrapper, DownloadFuture, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
+use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadArchiveData, DownloadedLenChangeNotify, DownloaderWrapper, DownloadFuture, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
 #[cfg(feature = "status-tracker")]
 use crate::status_tracker::DownloaderStatus;
 
@@ -127,10 +128,19 @@ impl DownloadingState {
     }
 }
 
+#[cfg(feature = "breakpoint-resume")]
+#[derive(Default)]
+pub struct BreakpointResume{
+    pub data_archive_notify: sync::Notify,
+    pub archive_complete_notify: sync::Notify,
+}
+
 pub struct HttpFileDownloader {
     pub downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>>,
     pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
     pub archive_data: Option<Box<DownloadArchiveData>>,
+    #[cfg(feature = "breakpoint-resume")]
+    pub breakpoint_resume: Option<Arc<BreakpointResume>>,
     pub config: Arc<HttpDownloadConfig>,
     pub downloaded_len_receiver: sync::watch::Receiver<u64>,
     content_length: Arc<AtomicU64>,
@@ -156,6 +166,8 @@ impl HttpFileDownloader {
             downloading_state_oneshot_vec: vec![],
             downloaded_len_change_notify: None,
             archive_data: None,
+            #[cfg(feature = "breakpoint-resume")]
+            breakpoint_resume: None,
             config,
             total_size_semaphore,
             content_length: Default::default(),
@@ -343,7 +355,7 @@ impl HttpFileDownloader {
     pub(crate) async fn download(
         &mut self,
     ) -> Result<
-        impl Future<Output=Result<DownloadingEndCause, DownloadError>> + 'static,
+        BoxFuture<'static,Result<DownloadingEndCause, DownloadError>>,
         DownloadStartError,
     > {
         self.reset();
@@ -356,7 +368,7 @@ impl HttpFileDownloader {
         } else if !self.config.save_dir.exists() {
             return Err(DownloadStartError::DirectoryDoesNotExist);
         }
-        Ok(self.start_download())
+        Ok(self.start_download().boxed())
     }
 
     pub fn take_downloading_state(
@@ -402,6 +414,8 @@ impl HttpFileDownloader {
         let downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>> = self.downloading_state_oneshot_vec.drain(..).collect();
         let downloaded_len_sender = self.downloaded_len_sender.clone();
         let cancel_token = self.cancel_token.clone();
+        #[cfg(feature = "breakpoint-resume")]
+        let breakpoint_resume = self.breakpoint_resume.take();
 
         async move {
             let response = client.execute(config.create_http_request());
@@ -550,7 +564,8 @@ impl HttpFileDownloader {
                         file,
                         request,
                         downloaded_len_change_notify,
-                        true, // todo:,
+                        #[cfg(feature = "breakpoint-resume")]
+                        breakpoint_resume
                     )
                         .await
                 }
@@ -565,7 +580,10 @@ impl HttpFileDownloader {
                 }
             };
 
-            if { downloading_state.read().is_some() } {
+            if {
+                let r = downloading_state.read().is_some();
+                r
+            } {
                 let mut guard = downloading_state.write();
                 *guard = None;
             }
@@ -598,11 +616,12 @@ impl ExtendedHttpFileDownloader {
         }
     }
     pub async fn prepare_download(&mut self) -> Result<DownloadFuture, DownloadStartError> {
-        let download_future = self.inner.download().await?.boxed();
-        Ok(self.downloader_wrapper.download(download_future).await?)
+        let prepare_download_result = self.inner.download().await;
+        let download_future = self.downloader_wrapper.handle_prepare_download(&mut self.inner, prepare_download_result).await?.boxed();
+        Ok(self.downloader_wrapper.download(&mut self.inner, download_future).await?)
     }
 
-    pub async fn download_to_end(&mut self) -> Result<DownloadingEndCause, DownloadToEndError> {
+    pub async fn download(&mut self) -> Result<DownloadingEndCause, DownloadToEndError> {
         Ok(self.prepare_download().await?.await?)
     }
 

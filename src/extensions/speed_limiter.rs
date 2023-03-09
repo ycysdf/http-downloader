@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -8,7 +7,7 @@ use async_trait::async_trait;
 use futures_util::future::{BoxFuture, OptionFuture};
 use futures_util::FutureExt;
 
-use crate::{DownloadController, DownloadedLenChangeNotify, DownloadError, DownloadExtensionOld, DownloadingEndCause, DownloadContext, DownloadStartError, DownloadStopError, HttpFileDownloader};
+use crate::{DownloadedLenChangeNotify, DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadStartError, HttpFileDownloader};
 
 pub struct DownloadSpeedLimiterExtension<Limiter: SpeedLimiter> {
     limiter: Arc<Limiter>,
@@ -21,6 +20,7 @@ impl DownloadSpeedLimiterExtension<DefaultSpeedLimiter> {
         }
     }
 }
+
 impl<Limiter: SpeedLimiter> DownloadSpeedLimiterExtension<Limiter> {
     pub fn from_limiter(limiter: Arc<Limiter>) -> Self {
         Self {
@@ -40,28 +40,26 @@ impl<Limiter: SpeedLimiter> DownloadSpeedLimiterState<Limiter> {
     }
 }
 
-pub struct DownloadSpeedLimiterController<DC: DownloadController, Limiter: SpeedLimiter> {
-    inner: Arc<DC>,
-    speed_limiter: Arc<Limiter>,
+#[async_trait]
+impl<Limiter: SpeedLimiter> DownloaderWrapper for DownloadSpeedLimiterExtension<Limiter> {
+    async fn download(&mut self, _downloader: &mut HttpFileDownloader, download_future: DownloadFuture) -> Result<DownloadFuture, DownloadStartError> {
+        self.limiter.reset().await;
+        Ok(download_future)
+    }
 }
 
-impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadExtensionOld<DC> for DownloadSpeedLimiterExtension<Limiter> {
-    type DownloadController = DownloadSpeedLimiterController<DC, Limiter>;
+impl<Limiter: SpeedLimiter> DownloadExtensionInstance for DownloadSpeedLimiterExtension<Limiter> {
+    type ExtensionParam = DownloadSpeedLimiterExtension<Limiter>;
     type ExtensionState = DownloadSpeedLimiterState<Limiter>;
 
-    fn layer(
-        self,
-        downloader: Arc<HttpFileDownloader>,
-        inner: Arc<DC>,
-    ) -> (Arc<Self::DownloadController>, Self::ExtensionState) {
-        drop(downloader);
-        let speed_limiter = self.limiter;
+
+    fn new(DownloadSpeedLimiterExtension { limiter }: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
+        downloader.downloaded_len_change_notify = Some(limiter.clone());
         (
-            Arc::new(DownloadSpeedLimiterController {
-                inner,
-                speed_limiter: speed_limiter.clone(),
-            }),
-            DownloadSpeedLimiterState { speed_limiter },
+            DownloadSpeedLimiterExtension {
+                limiter: limiter.clone(),
+            },
+            DownloadSpeedLimiterState { speed_limiter: limiter },
         )
     }
 }
@@ -141,23 +139,5 @@ impl DefaultSpeedLimiter {
 
     fn handle_byte_count_per(byte_count_per: Option<usize>) -> usize {
         byte_count_per.map(|n| ((n as i64) * (LIMIT_INTERVAL as i64 / 1000_i64)) as usize).unwrap_or(0)
-    }
-}
-
-#[async_trait]
-impl<DC: DownloadController, Limiter: SpeedLimiter> DownloadController for DownloadSpeedLimiterController<DC, Limiter> {
-    async fn download(
-        self: Arc<Self>,
-        mut params: DownloadContext,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
-        params.downloaded_len_change_notify = Some(self.speed_limiter.clone());
-        self.speed_limiter.reset().await;
-        self.inner.to_owned().download(params).await
-    }
-
-    async fn cancel(&self) -> Result<(), DownloadStopError> {
-        self.inner.cancel().await?;
-        self.speed_limiter.reset().await;
-        Ok(())
     }
 }

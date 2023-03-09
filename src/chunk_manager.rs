@@ -15,10 +15,7 @@ use tokio::fs::File;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
-use crate::{
-    chunk_item::{ChunkItem, ChunkMessageInfo},
-    ChunkIterator, ChunkRange, DownloadError,
-};
+use crate::{chunk_item::ChunkItem, ChunkIterator, ChunkRange, DownloadError};
 use crate::{DownloadedLenChangeNotify, DownloadingEndCause};
 
 #[allow(dead_code)]
@@ -38,10 +35,6 @@ pub struct ChunkManager {
     downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
     pub chunk_iterator: ChunkIterator,
     downloading_chunks: Mutex<HashMap<usize, Arc<ChunkItem>>>,
-    #[cfg(feature = "breakpoint-resume")]
-    pub data_archive_notify: sync::Notify,
-    #[cfg(feature = "breakpoint-resume")]
-    pub archive_complete_notify: sync::Notify,
     download_connection_count_sender: sync::watch::Sender<NonZeroU8>,
     pub download_connection_count_receiver: sync::watch::Receiver<NonZeroU8>,
     client: reqwest::Client,
@@ -65,15 +58,7 @@ impl ChunkManager {
         let (download_connection_count_sender, download_connection_count_receiver) =
             sync::watch::channel(download_connection_count);
 
-        #[cfg(feature = "breakpoint-resume")]
-            let (data_archive_notify, archive_complete_notify) =
-            (sync::Notify::new(), sync::Notify::new());
-
         Self {
-            #[cfg(feature = "breakpoint-resume")]
-            data_archive_notify,
-            #[cfg(feature = "breakpoint-resume")]
-            archive_complete_notify,
             downloaded_len_sender,
             chunk_iterator,
             downloading_chunks: Mutex::new(HashMap::new()),
@@ -120,11 +105,9 @@ impl ChunkManager {
         file: File,
         request: Box<Request>,
         downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
-        _breakpoint_resume: bool,
+        #[cfg(feature = "breakpoint-resume")]
+        breakpoint_resume: Option<Arc<crate::BreakpointResume>>,
     ) -> Result<DownloadingEndCause, DownloadError> {
-        let (chunk_message_sender, mut chunk_message_receiver) =
-            sync::mpsc::channel::<ChunkMessageInfo>(64);
-
         enum RunFuture<'a> {
             DownloadConnectionCountChanged(BoxFuture<'a, (sync::watch::Receiver<NonZeroU8>, u8)>),
             ChunkDownloadEnd {
@@ -258,8 +241,16 @@ impl ChunkManager {
                     } => {
                         let (downloading_chunk_count, chunk_item) = self.remove_chunk(chunk_index).await;
                         let _ = chunk_item.ok_or(DownloadError::ChunkRemoveFailed(chunk_index))?;
-                        if _breakpoint_resume {
-                            self.save_spec_data().await;
+
+                        #[cfg(feature = "breakpoint-resume")]
+                        if let Some(notifies) = breakpoint_resume.as_ref() {
+                            #[cfg(feature = "tracing")]
+                                let span = tracing::info_span!("Archive Data");
+                            #[cfg(feature = "tracing")]
+                                let _ = span.enter();
+                            let notified = notifies.archive_complete_notify.notified();
+                            notifies.data_archive_notify.notify_one();
+                            notified.await;
                         }
                         if is_iter_finished {
                             if downloading_chunk_count == 0 {
@@ -283,8 +274,8 @@ impl ChunkManager {
                         }
                     }
                     RunFutureResult::ChunkDownloadEnd {
-                        chunk_index,
-                        result: Err(err)
+                        result: Err(err),
+                        ..
                     } => {
                         self.cancel_token.cancel();
                         return Err(err);
@@ -355,19 +346,6 @@ impl ChunkManager {
             downloading_chunks,
             finished_chunks,
             no_chunk_remaining,
-        }
-    }
-
-    async fn save_spec_data(&self) {
-        #[cfg(feature = "breakpoint-resume")]
-        {
-            #[cfg(feature = "tracing")]
-                let span = tracing::info_span!("Archive Data");
-            #[cfg(feature = "tracing")]
-                let _ = span.enter();
-            let notified = self.archive_complete_notify.notified();
-            self.data_archive_notify.notify_one();
-            notified.await;
         }
     }
 

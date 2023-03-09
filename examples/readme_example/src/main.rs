@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
                 }
             ));
     info!("Start download，开始下载");
-    let finished_future = downloader.download_to_end().await?;
+    let finished_future = downloader.download().await?;
 
     let _status = status_state.status(); // get download status， 获取状态
     let _status_receiver = status_state.status_receiver; //status watcher，状态监听器

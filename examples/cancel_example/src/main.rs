@@ -68,7 +68,7 @@ async fn main() -> Result<()> {
         async move {
             loop {
                 info!("Start!");
-                let finished_future = downloader.download_to_end().await?;
+                let finished_future = downloader.download().await?;
                 let dec = finished_future.await?;
                 match dec {
                     DownloadingEndCause::DownloadFinished => {

@@ -3,13 +3,12 @@ use std::time::Instant;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
 use tokio::{select, sync};
 
-use crate::{DownloadController, DownloadError, DownloadExtensionOld, DownloadingEndCause, DownloadContext, DownloadStartError, DownloadStopError, DownloadWay, HttpFileDownloader};
+use crate::{DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadStartError, DownloadWay, HttpFileDownloader};
 
 #[derive(Default)]
 pub struct DownloadSpeedTrackerExtension {
@@ -46,50 +45,43 @@ impl DownloadSpeedTrackerState {
     }
 }
 
-impl<DC: DownloadController> DownloadExtensionOld<DC> for DownloadSpeedTrackerExtension {
-    type DownloadController = DownloadSpeedExtensionController<DC>;
-    type ExtensionState = DownloadSpeedTrackerState;
-
-    fn layer(
-        self,
-        downloader: Arc<HttpFileDownloader>,
-        inner: Arc<DC>,
-    ) -> (Arc<Self::DownloadController>, Self::ExtensionState) {
-        let DownloadSpeedTrackerExtension { log } = self;
-        let (sender, receiver) = sync::watch::channel(0);
-        let downloaded_len_receiver = downloader.downloaded_len_receiver.clone();
-
-        (
-            Arc::new(DownloadSpeedExtensionController {
-                inner,
-                download_speed_sender: Arc::new(sender),
-                downloaded_len_receiver,
-                log,
-            }),
-            DownloadSpeedTrackerState { receiver },
-        )
-    }
-}
-
-pub struct DownloadSpeedExtensionController<DC: DownloadController> {
-    inner: Arc<DC>,
+pub struct DownloadSpeedExtensionInstance {
     downloaded_len_receiver: sync::watch::Receiver<u64>,
     download_speed_sender: Arc<sync::watch::Sender<u64>>,
     log: bool,
 }
 
+
+impl DownloadExtensionInstance for DownloadSpeedExtensionInstance {
+    type ExtensionParam = DownloadSpeedTrackerExtension;
+    type ExtensionState = DownloadSpeedTrackerState;
+
+    fn new(param: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
+        let DownloadSpeedTrackerExtension { log } = param;
+        let (sender, receiver) = sync::watch::channel(0);
+        let downloaded_len_receiver = downloader.downloaded_len_receiver.clone();
+        (
+            DownloadSpeedExtensionInstance {
+                download_speed_sender: Arc::new(sender),
+                downloaded_len_receiver,
+                log,
+            },
+            DownloadSpeedTrackerState { receiver },
+        )
+    }
+}
+
 #[async_trait]
-impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionController<DC> {
+impl DownloaderWrapper for DownloadSpeedExtensionInstance {
     async fn download(
-        self: Arc<Self>,
-        mut params: DownloadContext,
-    ) -> Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError> {
+        &mut self,
+        downloader: &mut HttpFileDownloader,
+        download_future: DownloadFuture,
+    ) -> Result<DownloadFuture, DownloadStartError> {
         let (sender, download_way_receiver) = sync::oneshot::channel();
-        params.downloading_state_oneshot_vec.push(sender);
+        downloader.downloading_state_oneshot_vec.push(sender);
 
         // let last_downloaded_len = params.archive_data.as_ref().map(|n| n.downloaded_len).unwrap_or(0);
-        let download_future = self.inner.to_owned().download(params).await?;
-
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
         let downloaded_len_sender = self.download_speed_sender.clone();
         let log = self.log;
@@ -137,9 +129,5 @@ impl<DC: DownloadController> DownloadController for DownloadSpeedExtensionContro
                 }
             }
         }.boxed())
-    }
-
-    async fn cancel(&self) -> Result<(), DownloadStopError> {
-        self.inner.cancel().await
     }
 }
