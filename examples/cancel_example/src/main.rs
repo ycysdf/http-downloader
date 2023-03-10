@@ -1,14 +1,20 @@
+use std::future::Future;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::pin::Pin;
+use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Result;
+use futures_util::{FutureExt, StreamExt};
+use futures_util::future::BoxFuture;
+use futures_util::stream::FuturesUnordered;
 use tracing::info;
 use url::Url;
 
-use http_downloader::{breakpoint_resume::DownloadBreakpointResumeExtension, DownloadingEndCause, HttpDownloaderBuilder, speed_limiter::DownloadSpeedLimiterExtension, speed_tracker::DownloadSpeedTrackerExtension, status_tracker::DownloadStatusTrackerExtension};
+use http_downloader::{breakpoint_resume::DownloadBreakpointResumeExtension, DownloadError, DownloadFuture, DownloadingEndCause, HttpDownloaderBuilder, speed_tracker::DownloadSpeedTrackerExtension, status_tracker::DownloadStatusTrackerExtension};
 use http_downloader::bson_file_archiver::{ArchiveFilePath, BsonFileArchiverBuilder};
+use http_downloader::speed_limiter::DownloadSpeedLimiterExtension;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -17,8 +23,8 @@ async fn main() -> Result<()> {
     }
 
     let save_dir = PathBuf::from("C:/download");
-    let test_url = Url::parse("http://mirror.hk.leaseweb.net/speedtest/100mb.bin")?;
-    let (downloader, (_status_state, _speed_state, speed_limiter, ..)) =
+    let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
+    let (mut downloader, (_status_state, _speed_state, _speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap())
             .download_connection_count(NonZeroU8::new(3).unwrap()) // 下载连接数
@@ -30,15 +36,14 @@ async fn main() -> Result<()> {
                     download_archiver_builder: BsonFileArchiverBuilder::new(ArchiveFilePath::Suffix("bson".to_string()))
                 }
             ));
-    let downloader = Arc::new(downloader);
 
     // 打印下载进度
     // Print download Progress
     tokio::spawn({
         let mut downloaded_len_receiver = downloader.downloaded_len_receiver().clone();
-        let downloader = downloader.clone();
+        let total_size_future = downloader.total_size_future();
         async move {
-            let total_len = downloader.total_size().await;
+            let total_len = total_size_future.await;
             if let Some(total_len) = total_len {
                 info!("Total size: {:.2} Mb",total_len.get() as f64 / 1024_f64/ 1024_f64);
             }
@@ -53,36 +58,61 @@ async fn main() -> Result<()> {
         }
     });
 
-    tokio::spawn({
-        let downloader = downloader.clone();
+    tokio::spawn(
         async move {
-            loop {
-                tokio::time::sleep(Duration::from_secs(4)).await;
-                info!("Stop!");
-                let _ = downloader.cancel().await;
+            let mut futures_unordered = FuturesUnordered::new();
+            enum RunFuture {
+                DownloadFuture(DownloadFuture),
+                Cancel(BoxFuture<'static,()>),
             }
-        }
-    });
-    let r = tokio::spawn({
-        let downloader = downloader.clone();
-        async move {
-            loop {
-                info!("Start!");
-                let finished_future = downloader.download().await?;
-                let dec = finished_future.await?;
-                match dec {
-                    DownloadingEndCause::DownloadFinished => {
-                        return Result::<()>::Ok(());
-                    }
-                    DownloadingEndCause::Cancelled => {
-                        info!("DownloadingEndCause::Cancelled!");
-                        continue;
+            enum RunFutureResult {
+                DownloadFuture(Result<DownloadingEndCause, DownloadError>),
+                Cancel,
+            }
+            impl Future for RunFuture {
+                type Output = RunFutureResult;
+
+                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+                    match self.get_mut() {
+                        RunFuture::DownloadFuture(future) => {
+                            future.poll_unpin(cx).map(RunFutureResult::DownloadFuture)
+                        }
+                        RunFuture::Cancel(future) => {
+                            future.poll_unpin(cx).map(|_| RunFutureResult::Cancel)
+                        }
                     }
                 }
             }
-        }
-    });
-    r.await??;
+
+            let download_future = downloader.prepare_download().await?;
+            futures_unordered.push(RunFuture::DownloadFuture(download_future));
+            futures_unordered.push(RunFuture::Cancel(async{
+                tokio::time::sleep(Duration::from_secs(4)).await
+            }.boxed()));
+            while let Some(result) = futures_unordered.next().await {
+                match result {
+                    RunFutureResult::DownloadFuture(r) => {
+                        match r? {
+                            DownloadingEndCause::DownloadFinished => {
+                                break;
+                            }
+                            DownloadingEndCause::Cancelled => {
+                                let download_future = downloader.prepare_download().await?;
+                                futures_unordered.push(RunFuture::DownloadFuture(download_future));
+                                continue;
+                            }
+                        }
+                    }
+                    RunFutureResult::Cancel => {
+                        downloader.cancel().await;
+                        futures_unordered.push(RunFuture::Cancel(async{
+                            tokio::time::sleep(Duration::from_secs(4)).await
+                        }.boxed()));
+                    }
+                }
+            }
+            Ok::<(),anyhow::Error>(())
+        }).await??;
 
     info!("DownloadFinished!");
 

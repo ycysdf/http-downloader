@@ -2,7 +2,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
-use crate::{ChunkData, DownloadError, DownloadingEndCause, DownloadStartError, DownloadStopError, HttpFileDownloader};
+use crate::{ChunkData, DownloadError, DownloadingEndCause, DownloadStartError, HttpFileDownloader};
 
 #[cfg(feature = "breakpoint-resume")]
 pub mod breakpoint_resume;
@@ -16,7 +16,6 @@ pub mod speed_tracker;
 pub mod status_tracker;
 
 pub type DownloadFuture = BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>;
-pub type DownloadCancelFuture<'a> = BoxFuture<'a, Result<(), DownloadStopError>>;
 
 
 #[async_trait]
@@ -27,7 +26,7 @@ pub trait DownloaderWrapper: Send + Sync + 'static {
     ) -> Result<(), DownloadStartError> {
         Ok(())
     }
-    async fn handle_prepare_download(
+    async fn handle_prepare_download_result(
         &mut self,
         _downloader: &mut HttpFileDownloader,
         prepare_download_result: Result<DownloadFuture, DownloadStartError>,
@@ -41,26 +40,26 @@ pub trait DownloaderWrapper: Send + Sync + 'static {
     ) -> Result<DownloadFuture, DownloadStartError> {
         Ok(download_future)
     }
-    async fn cancel(&self, cancel_future: DownloadCancelFuture<'_>) -> Result<(), DownloadStopError> {
-        cancel_future.await
+    async fn on_cancel(&self) {
     }
 }
 
-pub trait DownloadExtensionInstance: DownloaderWrapper + Send + Sync + 'static {
-    type ExtensionParam;
+pub trait DownloadExtensionBuilder:'static {
+    type Wrapper: DownloaderWrapper;
     type ExtensionState;
 
-    fn new(param: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized;
+    fn build(self,downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized;
 }
 
 impl DownloaderWrapper for () {}
 
-impl DownloadExtensionInstance for () {
-    type ExtensionParam = ();
+impl DownloadExtensionBuilder for () {
+
+    type Wrapper = ();
     type ExtensionState = ();
 
-    fn new(_param: Self::ExtensionParam, _: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) {
-        ((), ())
+    fn build(self,_downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
+        ((),())
     }
 }
 
@@ -72,9 +71,26 @@ macro_rules! impl_download_extension_tuple {
         #[async_trait]
         #[allow(non_snake_case)]
         impl<
-            $($de: DownloadExtensionInstance,)*
+            $($de: DownloaderWrapper,)*
             > DownloaderWrapper for ($($de,)*)
         {
+            async fn prepare_download(
+                &mut self,
+                downloader: &mut HttpFileDownloader,
+            ) -> Result<(), DownloadStartError> {
+                let ($($de,)*) = &mut self;
+                $($de.prepare_download(downloader).await?;)*
+                Ok(())
+            }
+            async fn handle_prepare_download_result(
+                &mut self,
+                downloader: &mut HttpFileDownloader,
+                prepare_download_result: Result<DownloadFuture, DownloadStartError>,
+            ) -> Result<DownloadFuture, DownloadStartError> {
+                let ($($de,)*) = &mut self;
+                $(let prepare_download_result = $de.handle_prepare_download_result(downloader,prepare_download_result).await;)*
+                prepare_download_result
+            }
             async fn download(
                 &mut self,
                 downloader: &mut HttpFileDownloader,
@@ -84,24 +100,23 @@ macro_rules! impl_download_extension_tuple {
                 $(let download_future = $de.download(downloader,download_future).await?;)*
                 Ok(download_future)
             }
-            async fn cancel(&self, cancel_future: DownloadCancelFuture<'_>) -> Result<(), DownloadStopError> {
+            async fn on_cancel(&self) {
                 let ($($de,)*) = &self;
-                $(let cancel_future = $de.cancel(cancel_future);)*
-                Ok(cancel_future.await?)
+                $($de.on_cancel().await;)*
             }
         }
 
         #[allow(non_snake_case)]
         impl<
-            $($de: DownloadExtensionInstance,)*
-            > DownloadExtensionInstance for ($($de,)*)
+            $($de: DownloadExtensionBuilder,)*
+            > DownloadExtensionBuilder for ($($de,)*)
         {
+            type Wrapper = ($($de::Wrapper,)*);
             type ExtensionState = ($($de::ExtensionState,)*);
-            type ExtensionParam = ($($de::ExtensionParam,)*);
 
-            fn new(param:Self::ExtensionParam,downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) {
-                let ($($ds,)*) = param;
-                $(let ($de, $ds) = $de::new($ds,downloader);)*
+            fn build(self,downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) {
+                let ($($ds,)*) = self;
+                $(let ($de, $ds) = $ds.build(downloader);)*
                 (($($de,)*), ($($ds,)*))
             }
         }
@@ -109,7 +124,14 @@ macro_rules! impl_download_extension_tuple {
     };
 }
 
+impl_download_extension_tuple!((DE1,ds1));
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2));
 impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3));
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3),(DE4,ds4));
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3),(DE4,ds4),(DE5,ds5));
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3),(DE4,ds4),(DE5,ds5),(DE6,ds6));
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3),(DE4,ds4),(DE5,ds5),(DE6,ds6),(DE7,ds7));
+impl_download_extension_tuple!((DE1,ds1),(DE2,ds2),(DE3,ds3),(DE4,ds4),(DE5,ds5),(DE6,ds6),(DE7,ds7),(DE8,ds8));
 
 #[cfg_attr(
 feature = "async-graphql",
@@ -140,18 +162,4 @@ impl DownloadArchiveData {
         }
         self.downloaded_len / self.downloading_duration as u64
     }
-}/*
-
-#[derive(Default)]
-pub struct DownloadContext {
-    pub downloading_state_oneshot_vec: Vec<sync::oneshot::Sender<Arc<DownloadingState>>>,
-    pub downloaded_len_change_notify: Option<Arc<dyn DownloadedLenChangeNotify>>,
-    pub archive_data: Option<Box<DownloadArchiveData>>,
-    pub breakpoint_resume: bool,
 }
-
-impl DownloadContext {
-    pub fn new() -> Self {
-        Default::default()
-    }
-}*/

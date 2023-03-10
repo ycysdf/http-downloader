@@ -8,7 +8,7 @@ use futures_util::FutureExt;
 use futures_util::Stream;
 use tokio::{select, sync};
 
-use crate::{DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadStartError, DownloadWay, HttpFileDownloader};
+use crate::{DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingState, DownloadStartError, DownloadWay, HttpFileDownloader};
 
 #[derive(Default)]
 pub struct DownloadSpeedTrackerExtension {
@@ -45,26 +45,28 @@ impl DownloadSpeedTrackerState {
     }
 }
 
-pub struct DownloadSpeedExtensionInstance {
+pub struct DownloadSpeedDownloaderWrapper {
     downloaded_len_receiver: sync::watch::Receiver<u64>,
     download_speed_sender: Arc<sync::watch::Sender<u64>>,
+    downloading_state_receiver: Option<sync::oneshot::Receiver<Arc<DownloadingState>>>,
     log: bool,
 }
 
 
-impl DownloadExtensionInstance for DownloadSpeedExtensionInstance {
-    type ExtensionParam = DownloadSpeedTrackerExtension;
+impl DownloadExtensionBuilder for DownloadSpeedTrackerExtension{
+    type Wrapper = DownloadSpeedDownloaderWrapper;
     type ExtensionState = DownloadSpeedTrackerState;
 
-    fn new(param: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
-        let DownloadSpeedTrackerExtension { log } = param;
+    fn build(self, downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
+        let DownloadSpeedTrackerExtension { log } = self;
         let (sender, receiver) = sync::watch::channel(0);
         let downloaded_len_receiver = downloader.downloaded_len_receiver.clone();
         (
-            DownloadSpeedExtensionInstance {
+            DownloadSpeedDownloaderWrapper {
                 download_speed_sender: Arc::new(sender),
                 downloaded_len_receiver,
                 log,
+                downloading_state_receiver: None,
             },
             DownloadSpeedTrackerState { receiver },
         )
@@ -72,23 +74,28 @@ impl DownloadExtensionInstance for DownloadSpeedExtensionInstance {
 }
 
 #[async_trait]
-impl DownloaderWrapper for DownloadSpeedExtensionInstance {
-    async fn download(
-        &mut self,
-        downloader: &mut HttpFileDownloader,
-        download_future: DownloadFuture,
-    ) -> Result<DownloadFuture, DownloadStartError> {
+impl DownloaderWrapper for DownloadSpeedDownloaderWrapper {
+    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
         let (sender, download_way_receiver) = sync::oneshot::channel();
         downloader.downloading_state_oneshot_vec.push(sender);
+        self.downloading_state_receiver = Some(download_way_receiver);
+        Ok(())
+    }
 
-        // let last_downloaded_len = params.archive_data.as_ref().map(|n| n.downloaded_len).unwrap_or(0);
+    async fn download(
+        &mut self,
+        _downloader: &mut HttpFileDownloader,
+        download_future: DownloadFuture,
+    ) -> Result<DownloadFuture, DownloadStartError> {
+        let downloading_state_receiver = self.downloading_state_receiver.take().unwrap();
+
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
         let downloaded_len_sender = self.download_speed_sender.clone();
         let log = self.log;
 
 
         let future = async move {
-            let download_way_receiver = download_way_receiver
+            let download_way_receiver = downloading_state_receiver
                 .await
                 .map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
 

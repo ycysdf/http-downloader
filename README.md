@@ -74,7 +74,6 @@ bson-file-archiver = ["breakpoint-resume", "tracing", "serde", "bson", "url/serd
 ## Example
 
 ```rust
-
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
 use std::time::Duration;
@@ -86,11 +85,11 @@ use url::Url;
 use http_downloader::{
   breakpoint_resume::DownloadBreakpointResumeExtension,
   HttpDownloaderBuilder,
-  speed_limiter::DownloadSpeedLimiterExtension,
   speed_tracker::DownloadSpeedTrackerExtension,
   status_tracker::DownloadStatusTrackerExtension,
 };
 use http_downloader::bson_file_archiver::{ArchiveFilePath, BsonFileArchiverBuilder};
+use http_downloader::speed_limiter::DownloadSpeedLimiterExtension;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -99,11 +98,11 @@ async fn main() -> Result<()> {
   }
 
   let save_dir = PathBuf::from("C:/download");
-  let test_url = Url::parse("http://mirror.hk.leaseweb.net/speedtest/1000mb.bin")?;
-  let (downloader, (status_state, speed_state, speed_limiter, ..)) =
+  let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
+  let (mut downloader, (status_state, speed_state, speed_limiter, ..)) =
           HttpDownloaderBuilder::new(test_url, save_dir)
                   .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap()) // 块大小
-                  .download_connection_count(NonZeroU8::new(3).unwrap()) // 下载连接数
+                  .download_connection_count(NonZeroU8::new(3).unwrap())
                   .build((
                     // 下载状态追踪扩展
                     // by cargo feature "status-tracker" enable
@@ -121,8 +120,8 @@ async fn main() -> Result<()> {
                       download_archiver_builder: BsonFileArchiverBuilder::new(ArchiveFilePath::Suffix("bson".to_string()))
                     }
                   ));
-  info!("Start download，开始下载");
-  let finished_future = downloader.start().await?;
+  info!("Prepare download，准备下载");
+  let download_future = downloader.prepare_download().await?;
 
   let _status = status_state.status(); // get download status， 获取状态
   let _status_receiver = status_state.status_receiver; //status watcher，状态监听器
@@ -162,8 +161,8 @@ async fn main() -> Result<()> {
     speed_limiter.change_speed(None).await;
   });
 
-  info!("Wait for download to end，等待下载结束");
-  let dec = finished_future.await?;
+  info!("Start downloading until the end，开始下载直到结束");
+  let dec = download_future.await?;
   info!("Downloading end cause: {:?}", dec);
   Ok(())
 }

@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use futures_util::future::{BoxFuture, OptionFuture};
 use futures_util::FutureExt;
 
-use crate::{DownloadedLenChangeNotify, DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadStartError, HttpFileDownloader};
+use crate::{DownloadedLenChangeNotify, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadStartError, HttpFileDownloader};
 
 pub struct DownloadSpeedLimiterExtension<Limiter: SpeedLimiter> {
     limiter: Arc<Limiter>,
@@ -40,26 +40,31 @@ impl<Limiter: SpeedLimiter> DownloadSpeedLimiterState<Limiter> {
     }
 }
 
+pub struct DownloadSpeedLimiterDownloaderWrapper<Limiter: SpeedLimiter> {
+    limiter: Arc<Limiter>,
+}
 #[async_trait]
-impl<Limiter: SpeedLimiter> DownloaderWrapper for DownloadSpeedLimiterExtension<Limiter> {
+impl<Limiter: SpeedLimiter> DownloaderWrapper for DownloadSpeedLimiterDownloaderWrapper<Limiter> {
+    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+        downloader.downloaded_len_change_notify = Some(self.limiter.clone());
+        Ok(())
+    }
     async fn download(&mut self, _downloader: &mut HttpFileDownloader, download_future: DownloadFuture) -> Result<DownloadFuture, DownloadStartError> {
         self.limiter.reset().await;
         Ok(download_future)
     }
 }
 
-impl<Limiter: SpeedLimiter> DownloadExtensionInstance for DownloadSpeedLimiterExtension<Limiter> {
-    type ExtensionParam = DownloadSpeedLimiterExtension<Limiter>;
+impl<Limiter: SpeedLimiter> DownloadExtensionBuilder for DownloadSpeedLimiterExtension<Limiter> {
+    type Wrapper = DownloadSpeedLimiterDownloaderWrapper<Limiter>;
     type ExtensionState = DownloadSpeedLimiterState<Limiter>;
 
-
-    fn new(DownloadSpeedLimiterExtension { limiter }: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
-        downloader.downloaded_len_change_notify = Some(limiter.clone());
+    fn build(self, _downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
         (
-            DownloadSpeedLimiterExtension {
-                limiter: limiter.clone(),
+            DownloadSpeedLimiterDownloaderWrapper {
+                limiter: self.limiter.clone(),
             },
-            DownloadSpeedLimiterState { speed_limiter: limiter },
+            DownloadSpeedLimiterState { speed_limiter: self.limiter },
         )
     }
 }

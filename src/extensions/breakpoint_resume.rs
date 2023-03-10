@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
-use crate::{BreakpointResume, ChunkInfo, ChunkRange, DownloadArchiveData, DownloadError, DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadingEndCause, DownloadingState, DownloadStartError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
+use crate::{BreakpointResume, ChunkInfo, ChunkRange, DownloadArchiveData, DownloadError, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingEndCause, DownloadingState, DownloadStartError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 
 pub enum FileSave {
     Absolute(PathBuf),
@@ -64,24 +64,27 @@ pub struct DownloadBreakpointResumeState<T: DownloadDataArchiverBuilder> {
     pub download_archiver: Arc<T::DownloadDataArchiver>,
 }
 
-pub struct DownloadBreakpointResumeExtensionInstance<T: DownloadDataArchiverBuilder> {
+pub struct DownloadBreakpointResumeDownloaderWrapper<T: DownloadDataArchiverBuilder> {
     pub download_archiver: Arc<T::DownloadDataArchiver>,
+    breakpoint_resume: Option<Arc<BreakpointResume>>,
+    pub receiver: Option<sync::oneshot::Receiver<Arc<DownloadingState>>>
 }
 
-impl<T: DownloadDataArchiverBuilder+'static> DownloadExtensionInstance for DownloadBreakpointResumeExtensionInstance<T>
-{
-    type ExtensionParam = DownloadBreakpointResumeExtension<T>;
+impl<T: DownloadDataArchiverBuilder+'static> DownloadExtensionBuilder for DownloadBreakpointResumeExtension<T> {
+    type Wrapper = DownloadBreakpointResumeDownloaderWrapper<T>;
     type ExtensionState = DownloadBreakpointResumeState<T>;
 
-    fn new(param: Self::ExtensionParam, downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
+    fn build(self, downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
         let DownloadBreakpointResumeExtension {
             download_archiver_builder,
-        } = param;
+        } = self;
 
         let download_archiver = Arc::new(download_archiver_builder.build(&downloader.config));
         (
-            DownloadBreakpointResumeExtensionInstance {
+            DownloadBreakpointResumeDownloaderWrapper {
                 download_archiver: download_archiver.clone(),
+                breakpoint_resume: None,
+                receiver: None,
             },
             DownloadBreakpointResumeState {
                 download_archiver,
@@ -91,9 +94,20 @@ impl<T: DownloadDataArchiverBuilder+'static> DownloadExtensionInstance for Downl
 }
 
 #[async_trait]
-impl<T: DownloadDataArchiverBuilder+'static> DownloaderWrapper for DownloadBreakpointResumeExtensionInstance<T>
+impl<T: DownloadDataArchiverBuilder+'static> DownloaderWrapper for DownloadBreakpointResumeDownloaderWrapper<T>
 {
-    async fn handle_prepare_download(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
+    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+        let (sender, receiver) = sync::oneshot::channel();
+
+        downloader.breakpoint_resume = Some(Arc::new(BreakpointResume::default()));
+        downloader.archive_data = self.download_archiver.load().await?;
+        downloader.downloading_state_oneshot_vec.push(sender);
+        self.breakpoint_resume = downloader.breakpoint_resume.clone();
+        self.receiver = Some(receiver);
+        Ok(())
+    }
+
+    async fn handle_prepare_download_result(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
         match prepare_download_result {
             Ok(download_future) => Ok(download_future),
             Err(err) => {
@@ -111,14 +125,10 @@ impl<T: DownloadDataArchiverBuilder+'static> DownloaderWrapper for DownloadBreak
         download_future: DownloadFuture,
     ) -> Result<DownloadFuture, DownloadStartError>
     {
-        let (sender, receiver) = sync::oneshot::channel();
+        let notifies = self.breakpoint_resume.as_ref().unwrap().clone();
+        let receiver= self.receiver.take().unwrap();
 
-        let breakpoint_resume = Arc::new(BreakpointResume::default());
-        let notifies = breakpoint_resume.clone();
-        downloader.breakpoint_resume = Some(breakpoint_resume);
-        downloader.archive_data = self.download_archiver.load().await?;
-        downloader.downloading_state_oneshot_vec.push(sender);
-        let is_resume = downloader.archive_data.is_some();
+        let is_resume= downloader.archive_data.is_some();
 
         let future = {
             let download_archiver = self.download_archiver.clone();

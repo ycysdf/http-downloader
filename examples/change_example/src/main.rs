@@ -8,7 +8,7 @@ use futures_util::{pin_mut, StreamExt};
 use url::Url;
 
 use http_downloader::HttpDownloaderBuilder;
-use http_downloader::speed_limiter::DownloadSpeedLimiterExtension;
+use http_downloader::speed_limiter::{DownloadSpeedLimiterDownloaderWrapper, DownloadSpeedLimiterExtension};
 use http_downloader::speed_tracker::DownloadSpeedTrackerExtension;
 
 #[tokio::main]
@@ -17,17 +17,17 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt::init();
     }
     let save_dir = PathBuf::from("C:/download");
-    let test_url = Url::parse("http://mirror.hk.leaseweb.net/speedtest/1000mb.bin")?;
-    let (downloader, (_, ..)) =
+    let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
+    let (mut downloader, (_, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 4).unwrap())
             .download_connection_count(NonZeroU8::new(3).unwrap()) // 下载连接数
             .build((DownloadSpeedLimiterExtension::new(None), DownloadSpeedTrackerExtension {
                 log: true
             }));
-    let downloader = Arc::new(downloader);
 
-    let finished_future = downloader.download().await?;
+    let download_future = downloader.prepare_download().await?;
+    let mut downloader = Arc::new(downloader);
 
     tokio::spawn({
         let downloader = downloader.clone();
@@ -73,7 +73,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let dec = finished_future.await?;
+    let dec = download_future.await?;
     tracing::info!("Downloading end cause: {:?}", dec);
     Ok(())
 }

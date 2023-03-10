@@ -23,8 +23,6 @@ use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadArchiveData, DownloadedLenChangeNotify, DownloaderWrapper, DownloadFuture, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
-#[cfg(feature = "status-tracker")]
-use crate::status_tracker::DownloaderStatus;
 
 #[derive(Clone, Copy, Eq, PartialEq, Debug)]
 pub enum DownloadingEndCause {
@@ -81,21 +79,6 @@ pub enum DownloadToEndError {
     DownloadStartError(#[from] DownloadStartError),
     #[error("{:?}", .0)]
     DownloadError(#[from] DownloadError),
-}
-
-#[derive(Error, Debug)]
-pub enum DownloadStopError {
-    #[error("recv error")]
-    RecvError(#[from] sync::oneshot::error::RecvError),
-    #[error("download already finished")]
-    DownloadAlreadyFinished,
-    #[error("http request failed")]
-    RemoveFileError(#[from] io::Error),
-    #[error("it is no start")]
-    NoStart,
-    #[cfg(feature = "status-tracker")]
-    #[error("downloader status send error")]
-    SendError(#[from] SendError<DownloaderStatus>),
 }
 
 #[derive(Error, Debug)]
@@ -294,13 +277,17 @@ impl HttpFileDownloader {
         *self.downloaded_len_receiver.borrow()
     }
 
-    pub async fn total_size(&self) -> Option<NonZeroU64> {
-        let _ = self.total_size_semaphore.acquire().await;
-        let content_length = self.content_length.load(Ordering::Relaxed);
-        if content_length == 0 {
-            None
-        } else {
-            Some(NonZeroU64::new(content_length).unwrap())
+    pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> {
+        let total_size_semaphore = self.total_size_semaphore.clone();
+        let content_length = self.content_length.clone();
+        async move {
+            let _ = total_size_semaphore.acquire().await;
+            let content_length = content_length.load(Ordering::Relaxed);
+            if content_length == 0 {
+                None
+            } else {
+                Some(NonZeroU64::new(content_length).unwrap())
+            }
         }
     }
 
@@ -381,20 +368,8 @@ impl HttpFileDownloader {
         guard.take()
     }
 
-    pub async fn cancel(&self) -> Result<(), DownloadStopError> {
-        {
-            self.cancel_token.cancel();
-        }
-        if let Some((receiver, _downloading_state)) = self.take_downloading_state() {
-            match receiver.await? {
-                DownloadingEndCause::DownloadFinished => {
-                    Err(DownloadStopError::DownloadAlreadyFinished)
-                }
-                DownloadingEndCause::Cancelled => Ok(()),
-            }
-        } else {
-            Err(DownloadStopError::NoStart)
-        }
+    pub fn cancel(&self) {
+        self.cancel_token.cancel();
     }
 
     //noinspection RsExternalLinter
@@ -601,7 +576,7 @@ impl HttpFileDownloader {
 }
 
 pub struct ExtendedHttpFileDownloader {
-    pub inner: HttpFileDownloader,
+    inner: HttpFileDownloader,
     downloader_wrapper: Box<dyn DownloaderWrapper>,
 }
 
@@ -616,8 +591,9 @@ impl ExtendedHttpFileDownloader {
         }
     }
     pub async fn prepare_download(&mut self) -> Result<DownloadFuture, DownloadStartError> {
+        self.downloader_wrapper.prepare_download(&mut self.inner).await?;
         let prepare_download_result = self.inner.download().await;
-        let download_future = self.downloader_wrapper.handle_prepare_download(&mut self.inner, prepare_download_result).await?.boxed();
+        let download_future = self.downloader_wrapper.handle_prepare_download_result(&mut self.inner, prepare_download_result).await?.boxed();
         Ok(self.downloader_wrapper.download(&mut self.inner, download_future).await?)
     }
 
@@ -625,8 +601,9 @@ impl ExtendedHttpFileDownloader {
         Ok(self.prepare_download().await?.await?)
     }
 
-    pub async fn cancel(&self) -> Result<(), DownloadStopError> {
-        Ok(self.downloader_wrapper.cancel(self.inner.cancel().boxed()).await?)
+    pub async fn cancel(&self) {
+        self.downloader_wrapper.on_cancel().await;
+        self.inner.cancel();
     }
 
     #[inline]
@@ -667,8 +644,8 @@ impl ExtendedHttpFileDownloader {
         self.inner.downloaded_len()
     }
     #[inline]
-    pub async fn total_size(&self) -> Option<NonZeroU64> {
-        self.inner.total_size().await
+    pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> {
+        self.inner.total_size_future()
     }
     #[inline]
     pub fn current_total_size(&self) -> Option<NonZeroU64> {

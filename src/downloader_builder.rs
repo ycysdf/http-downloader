@@ -7,7 +7,7 @@ use std::time::Duration;
 use headers::{ETag, HeaderMap, HeaderMapExt};
 use url::Url;
 
-use crate::{DownloadExtensionInstance, ExtendedHttpFileDownloader, HttpFileDownloader};
+use crate::{DownloadExtensionBuilder, ExtendedHttpFileDownloader, HttpFileDownloader};
 
 pub struct HttpDownloadConfig {
     // 提前设置长度，如果存储空间不足将提前报错
@@ -99,7 +99,7 @@ impl HttpDownloaderBuilder {
             handle_zero_content: false,
             strict_check_accept_ranges: true,
             http_request_configure: None,
-            set_len_in_advance: true,
+            set_len_in_advance: false,
         }
     }
 
@@ -177,11 +177,11 @@ impl HttpDownloaderBuilder {
     }
 
     pub fn build<
-        DE: DownloadExtensionInstance,
+        DEB:DownloadExtensionBuilder,
     >(
         self,
-        param: DE::ExtensionParam,
-    ) -> (ExtendedHttpFileDownloader, DE::ExtensionState) {
+        extension_builder: DEB,
+    ) -> (ExtendedHttpFileDownloader, DEB::ExtensionState) {
         let mut downloader = HttpFileDownloader::new(
             self.client.unwrap_or(Default::default()),
             Arc::new(HttpDownloadConfig {
@@ -206,7 +206,7 @@ impl HttpDownloaderBuilder {
                 http_request_configure: self.http_request_configure,
             }),
         );
-        let (extension, es) = DE::new(param, &mut downloader);
+        let (extension, es) = extension_builder.build(&mut downloader);
         (ExtendedHttpFileDownloader::new(downloader, Box::new(extension)), es)
     }
 }

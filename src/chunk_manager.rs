@@ -203,6 +203,19 @@ impl ChunkManager {
             }.boxed()
         }));
 
+        #[cfg(feature = "breakpoint-resume")]
+        let save_data = ||async{
+            if let Some(notifies) = breakpoint_resume.as_ref() {
+                #[cfg(feature = "tracing")]
+                    let span = tracing::info_span!("Archive Data");
+                #[cfg(feature = "tracing")]
+                    let _ = span.enter();
+                let notified = notifies.archive_complete_notify.notified();
+                notifies.data_archive_notify.notify_one();
+                notified.await;
+            }
+        };
+
         let run_future = async {
             while let Some(result) = futures_unordered.next().await {
                 match result {
@@ -243,15 +256,7 @@ impl ChunkManager {
                         let _ = chunk_item.ok_or(DownloadError::ChunkRemoveFailed(chunk_index))?;
 
                         #[cfg(feature = "breakpoint-resume")]
-                        if let Some(notifies) = breakpoint_resume.as_ref() {
-                            #[cfg(feature = "tracing")]
-                                let span = tracing::info_span!("Archive Data");
-                            #[cfg(feature = "tracing")]
-                                let _ = span.enter();
-                            let notified = notifies.archive_complete_notify.notified();
-                            notifies.data_archive_notify.notify_one();
-                            notified.await;
-                        }
+                        save_data().await;
                         if is_iter_finished {
                             if downloading_chunk_count == 0 {
                                 debug_assert_eq!(
@@ -277,7 +282,8 @@ impl ChunkManager {
                         result: Err(err),
                         ..
                     } => {
-                        self.cancel_token.cancel();
+                        #[cfg(feature = "breakpoint-resume")]
+                        save_data().await;
                         return Err(err);
                     }
                     _ => {}
@@ -290,6 +296,8 @@ impl ChunkManager {
         select! {
             r = run_future => {r}
             _ = cancel_token.cancelled() => {
+                #[cfg(feature = "breakpoint-resume")]
+                save_data().await;
                 Ok(DownloadingEndCause::Cancelled)
             }
         }

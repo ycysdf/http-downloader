@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
-use crate::{DownloadCancelFuture, DownloaderWrapper, DownloadExtensionInstance, DownloadFuture, DownloadingEndCause, DownloadStartError, DownloadStopError, HttpFileDownloader};
+use crate::{DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingEndCause, DownloadingState, DownloadStartError, HttpFileDownloader};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkItemPendingType {
@@ -74,31 +74,33 @@ impl DownloadStatusTrackerExtension {
     }
 }
 
-pub struct DownloadStatusTrackerController {
+pub struct DownloadStatusDownloaderWrapper {
     pub status_sender: Arc<DownloadStatusSender>,
     status_receiver: sync::watch::Receiver<DownloaderStatus>,
+    downloading_state_receiver: Option<sync::oneshot::Receiver<Arc<DownloadingState>>>,
 }
 
-impl DownloadStatusTrackerController {
+impl DownloadStatusDownloaderWrapper {
     pub fn status(&self) -> DownloaderStatus {
         self.status_receiver.borrow().clone()
     }
 }
 
-impl DownloadExtensionInstance for DownloadStatusTrackerController {
-    type ExtensionParam = DownloadStatusTrackerExtension;
+impl DownloadExtensionBuilder for DownloadStatusTrackerExtension {
+    type Wrapper = DownloadStatusDownloaderWrapper;
     type ExtensionState = DownloadStatusTrackerState;
 
-    fn new(param: Self::ExtensionParam, _downloader: &mut HttpFileDownloader) -> (Self, Self::ExtensionState) where Self: Sized {
+    fn build(self, _downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
         let (status_sender, status_receiver) = sync::watch::channel(DownloaderStatus::NoStart);
         let status_sender = Arc::new(DownloadStatusSender {
-            log: param.log,
+            log: self.log,
             status_sender,
         });
         (
-            DownloadStatusTrackerController {
+            DownloadStatusDownloaderWrapper {
                 status_receiver: status_receiver.clone(),
                 status_sender: status_sender.clone(),
+                downloading_state_receiver: None,
             },
             DownloadStatusTrackerState {
                 status_receiver,
@@ -109,8 +111,11 @@ impl DownloadExtensionInstance for DownloadStatusTrackerController {
 }
 
 #[async_trait]
-impl DownloaderWrapper for DownloadStatusTrackerController {
-    async fn prepare_download(&mut self, _downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
+    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+        let (sender, download_way_receiver) = sync::oneshot::channel();
+        self.downloading_state_receiver = Some(download_way_receiver);
+        downloader.downloading_state_oneshot_vec.push(sender);
         match self.status() {
             DownloaderStatus::Running => return Err(DownloadStartError::AlreadyDownloading),
             DownloaderStatus::Pending(pending_type) => match pending_type {
@@ -131,7 +136,7 @@ impl DownloaderWrapper for DownloadStatusTrackerController {
         Ok(())
     }
 
-    async fn handle_prepare_download(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
+    async fn handle_prepare_download_result(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
         match prepare_download_result {
             Ok(download_future) => Ok(download_future),
             Err(err) => {
@@ -143,17 +148,14 @@ impl DownloaderWrapper for DownloadStatusTrackerController {
 
     async fn download(
         &mut self,
-        downloader: &mut HttpFileDownloader,
+        _downloader: &mut HttpFileDownloader,
         mut download_future: DownloadFuture,
     ) -> Result<DownloadFuture, DownloadStartError> {
         self.status_sender.change_status(DownloaderStatus::Pending(
             NetworkItemPendingType::Initializing,
         ));
-        let (download_way_sender, download_way_receiver) = sync::oneshot::channel();
+        let download_way_receiver = self.downloading_state_receiver.take().unwrap();
 
-        downloader
-            .downloading_state_oneshot_vec
-            .push(download_way_sender);
         let status_sender = self.status_sender.clone();
         Ok(async move {
             select! {
@@ -192,9 +194,8 @@ impl DownloaderWrapper for DownloadStatusTrackerController {
             .boxed())
     }
 
-    async fn cancel(&self, cancel_future: DownloadCancelFuture<'_>) -> Result<(), DownloadStopError> {
+    async fn on_cancel(&self) {
         self.status_sender
             .change_status(DownloaderStatus::Pending(NetworkItemPendingType::Stopping));
-        cancel_future.await
     }
 }
