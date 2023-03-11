@@ -33,9 +33,9 @@
 - 下载速度限制
 - 下载速度追踪
 - 在下载时修改
-  - 下载并行连接数
-  - 速度限制
-  - 下载块大小
+    - 下载并行连接数
+    - 速度限制
+    - 下载块大小
 
 ## cargo futures
 
@@ -71,7 +71,8 @@ tokio = { version = "1", features = ["rt", "macros"] }
 
 ## 终端 UI
 
-使用此库做的一个，简单的终端 UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
+使用此库做的一个，简单的终端
+UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/http-downloader-tui)
 
 ## 用例
 
@@ -82,7 +83,6 @@ tokio = { version = "1", features = ["rt", "macros"] }
 例如 `DownloadSpeedTrackerExtension` 扩展，就对应 `DownloadSpeedTrackerState` 状态
 
 通过`DownloadSpeedTrackerState` 的  `reciver` 成员就可以去监听下载速度，或者通过 `download_speed`函数直接去获取下载速度
-
 
 ```rust
 use std::num::{NonZeroU8, NonZeroUsize};
@@ -178,6 +178,5 @@ async fn main() -> Result<()> {
     Ok(())
 }
 ```
-
 
 更多用例，请看这里：[Examples](https://github.com/ycysdf/http-downloader/blob/main/examples)

@@ -40,26 +40,24 @@ pub trait DownloaderWrapper: Send + Sync + 'static {
     ) -> Result<DownloadFuture, DownloadStartError> {
         Ok(download_future)
     }
-    async fn on_cancel(&self) {
-    }
+    async fn on_cancel(&self) {}
 }
 
-pub trait DownloadExtensionBuilder:'static {
+pub trait DownloadExtensionBuilder: 'static {
     type Wrapper: DownloaderWrapper;
     type ExtensionState;
 
-    fn build(self,downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized;
+    fn build(self, downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized;
 }
 
 impl DownloaderWrapper for () {}
 
 impl DownloadExtensionBuilder for () {
-
     type Wrapper = ();
     type ExtensionState = ();
 
-    fn build(self,_downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
-        ((),())
+    fn build(self, _downloader: &mut HttpFileDownloader) -> (Self::Wrapper, Self::ExtensionState) where Self: Sized {
+        ((), ())
     }
 }
 

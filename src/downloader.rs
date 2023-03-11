@@ -113,7 +113,7 @@ impl DownloadingState {
 
 #[cfg(feature = "breakpoint-resume")]
 #[derive(Default)]
-pub struct BreakpointResume{
+pub struct BreakpointResume {
     pub data_archive_notify: sync::Notify,
     pub archive_complete_notify: sync::Notify,
 }
@@ -126,7 +126,7 @@ pub struct HttpFileDownloader {
     pub breakpoint_resume: Option<Arc<BreakpointResume>>,
     pub config: Arc<HttpDownloadConfig>,
     pub downloaded_len_receiver: sync::watch::Receiver<u64>,
-    content_length: Arc<AtomicU64>,
+    pub content_length: Arc<AtomicU64>,
     client: reqwest::Client,
     downloading_state: Arc<RwLock<
         Option<(
@@ -197,7 +197,7 @@ impl HttpFileDownloader {
     }
 
     #[cfg(feature = "async-stream")]
-    pub async fn downloaded_len_stream(&self) -> impl Stream<Item=u64> {
+    pub fn downloaded_len_stream(&self) -> impl Stream<Item=u64> + 'static {
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
         let duration = self.config.downloaded_len_send_interval.clone();
         async_stream::stream! {
@@ -214,7 +214,7 @@ impl HttpFileDownloader {
     }
 
     #[cfg(feature = "async-stream")]
-    pub async fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>>> {
+    pub fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>> + 'static> {
         match self.downloading_state.read().as_ref() {
             None => {
                 // tracing::info!("downloading_state is null!");
@@ -244,7 +244,7 @@ impl HttpFileDownloader {
     }
 
     #[cfg(feature = "async-stream")]
-    pub async fn chunks_info_stream(&self) -> Option<impl Stream<Item=ChunksInfo>> {
+    pub fn chunks_info_stream(&self) -> Option<impl Stream<Item=ChunksInfo> + 'static> {
         match self.downloading_state.read().as_ref() {
             None => {
                 // tracing::info!("downloading_state is null!");
@@ -277,7 +277,7 @@ impl HttpFileDownloader {
         *self.downloaded_len_receiver.borrow()
     }
 
-    pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> {
+    pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> + 'static {
         let total_size_semaphore = self.total_size_semaphore.clone();
         let content_length = self.content_length.clone();
         async move {
@@ -342,7 +342,7 @@ impl HttpFileDownloader {
     pub(crate) async fn download(
         &mut self,
     ) -> Result<
-        BoxFuture<'static,Result<DownloadingEndCause, DownloadError>>,
+        BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>,
         DownloadStartError,
     > {
         self.reset();
@@ -390,7 +390,7 @@ impl HttpFileDownloader {
         let downloaded_len_sender = self.downloaded_len_sender.clone();
         let cancel_token = self.cancel_token.clone();
         #[cfg(feature = "breakpoint-resume")]
-        let breakpoint_resume = self.breakpoint_resume.take();
+            let breakpoint_resume = self.breakpoint_resume.take();
 
         async move {
             let response = client.execute(config.create_http_request());
@@ -540,7 +540,7 @@ impl HttpFileDownloader {
                         request,
                         downloaded_len_change_notify,
                         #[cfg(feature = "breakpoint-resume")]
-                        breakpoint_resume
+                            breakpoint_resume,
                     )
                         .await
                 }
@@ -576,7 +576,7 @@ impl HttpFileDownloader {
 }
 
 pub struct ExtendedHttpFileDownloader {
-    inner: HttpFileDownloader,
+    pub inner: HttpFileDownloader,
     downloader_wrapper: Box<dyn DownloaderWrapper>,
 }
 
@@ -613,8 +613,8 @@ impl ExtendedHttpFileDownloader {
 
     #[cfg(feature = "async-stream")]
     #[inline]
-    pub async fn downloaded_len_stream(&self) -> impl Stream<Item=u64> {
-        self.inner.downloaded_len_stream().await
+    pub fn downloaded_len_stream(&self) -> impl Stream<Item=u64> + 'static {
+        self.inner.downloaded_len_stream()
     }
 
     #[inline]
@@ -631,25 +631,29 @@ impl ExtendedHttpFileDownloader {
 
     #[cfg(feature = "async-stream")]
     #[inline]
-    pub async fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>>> {
-        self.inner.chunks_stream().await
+    pub fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>> + 'static> {
+        self.inner.chunks_stream()
     }
     #[cfg(feature = "async-stream")]
     #[inline]
-    pub async fn chunks_info_stream(&self) -> Option<impl Stream<Item=ChunksInfo>> {
-        self.inner.chunks_info_stream().await
+    pub fn chunks_info_stream(&self) -> Option<impl Stream<Item=ChunksInfo>> {
+        self.inner.chunks_info_stream()
     }
     #[inline]
     pub fn downloaded_len(&self) -> u64 {
         self.inner.downloaded_len()
     }
     #[inline]
-    pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> {
+    pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> + 'static {
         self.inner.total_size_future()
     }
     #[inline]
     pub fn current_total_size(&self) -> Option<NonZeroU64> {
         self.inner.current_total_size()
+    }
+    #[inline]
+    pub fn atomic_total_size(&self) -> Arc<AtomicU64> {
+        self.inner.content_length.clone()
     }
     #[inline]
     pub async fn get_chunks(&self) -> Vec<Arc<ChunkItem>> {
@@ -658,6 +662,11 @@ impl ExtendedHttpFileDownloader {
     #[inline]
     pub fn get_file_path(&self) -> PathBuf {
         self.inner.get_file_path()
+    }
+
+    #[inline]
+    pub fn get_downloading_state(&self) -> Option<Arc<DownloadingState>> {
+        self.inner.get_downloading_state()
     }
 
     #[inline]

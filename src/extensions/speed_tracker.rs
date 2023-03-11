@@ -31,7 +31,7 @@ impl DownloadSpeedTrackerState {
     }
 
     #[cfg(feature = "async-stream")]
-    pub async fn stream(&self) -> impl Stream<Item=u64> {
+    pub fn stream(&self) -> impl Stream<Item=u64> + 'static {
         let mut receiver = self.receiver.clone();
         async_stream::stream! {
             let download_speed = *receiver.borrow();
@@ -53,7 +53,7 @@ pub struct DownloadSpeedDownloaderWrapper {
 }
 
 
-impl DownloadExtensionBuilder for DownloadSpeedTrackerExtension{
+impl DownloadExtensionBuilder for DownloadSpeedTrackerExtension {
     type Wrapper = DownloadSpeedDownloaderWrapper;
     type ExtensionState = DownloadSpeedTrackerState;
 

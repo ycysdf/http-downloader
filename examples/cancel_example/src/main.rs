@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
             .build((
                 DownloadStatusTrackerExtension { log: true }, // 下载状态追踪扩展
                 DownloadSpeedTrackerExtension { log: true }, // 下载速度追踪扩展
-                DownloadSpeedLimiterExtension::new(Some(1024 * 300)),
+                DownloadSpeedLimiterExtension::new(None),
                 DownloadBreakpointResumeExtension { // 断点续传扩展
                     download_archiver_builder: BsonFileArchiverBuilder::new(ArchiveFilePath::Suffix("bson".to_string()))
                 }
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
             let mut futures_unordered = FuturesUnordered::new();
             enum RunFuture {
                 DownloadFuture(DownloadFuture),
-                Cancel(BoxFuture<'static,()>),
+                Cancel(BoxFuture<'static, ()>),
             }
             enum RunFutureResult {
                 DownloadFuture(Result<DownloadingEndCause, DownloadError>),
@@ -86,7 +86,7 @@ async fn main() -> Result<()> {
 
             let download_future = downloader.prepare_download().await?;
             futures_unordered.push(RunFuture::DownloadFuture(download_future));
-            futures_unordered.push(RunFuture::Cancel(async{
+            futures_unordered.push(RunFuture::Cancel(async {
                 tokio::time::sleep(Duration::from_secs(4)).await
             }.boxed()));
             while let Some(result) = futures_unordered.next().await {
@@ -97,6 +97,9 @@ async fn main() -> Result<()> {
                                 break;
                             }
                             DownloadingEndCause::Cancelled => {
+                                futures_unordered.push(RunFuture::Cancel(async {
+                                    tokio::time::sleep(Duration::from_secs(4)).await
+                                }.boxed()));
                                 let download_future = downloader.prepare_download().await?;
                                 futures_unordered.push(RunFuture::DownloadFuture(download_future));
                                 continue;
@@ -105,13 +108,10 @@ async fn main() -> Result<()> {
                     }
                     RunFutureResult::Cancel => {
                         downloader.cancel().await;
-                        futures_unordered.push(RunFuture::Cancel(async{
-                            tokio::time::sleep(Duration::from_secs(4)).await
-                        }.boxed()));
                     }
                 }
             }
-            Ok::<(),anyhow::Error>(())
+            Ok::<(), anyhow::Error>(())
         }).await??;
 
     info!("DownloadFinished!");

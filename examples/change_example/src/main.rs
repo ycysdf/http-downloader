@@ -8,7 +8,7 @@ use futures_util::{pin_mut, StreamExt};
 use url::Url;
 
 use http_downloader::HttpDownloaderBuilder;
-use http_downloader::speed_limiter::{DownloadSpeedLimiterDownloaderWrapper, DownloadSpeedLimiterExtension};
+use http_downloader::speed_limiter::DownloadSpeedLimiterExtension;
 use http_downloader::speed_tracker::DownloadSpeedTrackerExtension;
 
 #[tokio::main]

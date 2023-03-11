@@ -43,6 +43,7 @@ impl<Limiter: SpeedLimiter> DownloadSpeedLimiterState<Limiter> {
 pub struct DownloadSpeedLimiterDownloaderWrapper<Limiter: SpeedLimiter> {
     limiter: Arc<Limiter>,
 }
+
 #[async_trait]
 impl<Limiter: SpeedLimiter> DownloaderWrapper for DownloadSpeedLimiterDownloaderWrapper<Limiter> {
     async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {

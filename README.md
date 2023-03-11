@@ -24,16 +24,16 @@
 
 > The project is being refactored and will not dependent on the asynchronous runtime
 
-## Features 
+## Features
 
 - Multithreaded download
 - Breakpoint resume
 - Download speed limit
 - Download speed tracking
-- Modify at download time 
-  - max parallel connection count
-  - max download speed
-  - chunk size
+- Modify at download time
+    - max parallel connection count
+    - max download speed
+    - chunk size
 
 ## Required minimum dependency
 

@@ -67,10 +67,10 @@ pub struct DownloadBreakpointResumeState<T: DownloadDataArchiverBuilder> {
 pub struct DownloadBreakpointResumeDownloaderWrapper<T: DownloadDataArchiverBuilder> {
     pub download_archiver: Arc<T::DownloadDataArchiver>,
     breakpoint_resume: Option<Arc<BreakpointResume>>,
-    pub receiver: Option<sync::oneshot::Receiver<Arc<DownloadingState>>>
+    pub receiver: Option<sync::oneshot::Receiver<Arc<DownloadingState>>>,
 }
 
-impl<T: DownloadDataArchiverBuilder+'static> DownloadExtensionBuilder for DownloadBreakpointResumeExtension<T> {
+impl<T: DownloadDataArchiverBuilder + 'static> DownloadExtensionBuilder for DownloadBreakpointResumeExtension<T> {
     type Wrapper = DownloadBreakpointResumeDownloaderWrapper<T>;
     type ExtensionState = DownloadBreakpointResumeState<T>;
 
@@ -94,7 +94,7 @@ impl<T: DownloadDataArchiverBuilder+'static> DownloadExtensionBuilder for Downlo
 }
 
 #[async_trait]
-impl<T: DownloadDataArchiverBuilder+'static> DownloaderWrapper for DownloadBreakpointResumeDownloaderWrapper<T>
+impl<T: DownloadDataArchiverBuilder + 'static> DownloaderWrapper for DownloadBreakpointResumeDownloaderWrapper<T>
 {
     async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
         let (sender, receiver) = sync::oneshot::channel();
@@ -126,9 +126,9 @@ impl<T: DownloadDataArchiverBuilder+'static> DownloaderWrapper for DownloadBreak
     ) -> Result<DownloadFuture, DownloadStartError>
     {
         let notifies = self.breakpoint_resume.as_ref().unwrap().clone();
-        let receiver= self.receiver.take().unwrap();
+        let receiver = self.receiver.take().unwrap();
 
-        let is_resume= downloader.archive_data.is_some();
+        let is_resume = downloader.archive_data.is_some();
 
         let future = {
             let download_archiver = self.download_archiver.clone();

@@ -116,6 +116,7 @@ impl ChunkManager {
             },
         }
 
+        #[derive(Debug)]
         enum RunFutureResult {
             DownloadConnectionCountChanged {
                 receiver: sync::watch::Receiver<NonZeroU8>,
@@ -193,7 +194,6 @@ impl ChunkManager {
                 Some(future) => futures_unordered.push(future)
             }
         }
-
         futures_unordered.push(RunFuture::DownloadConnectionCountChanged({
             let mut receiver = self.download_connection_count_receiver.clone();
             async move {
@@ -204,7 +204,7 @@ impl ChunkManager {
         }));
 
         #[cfg(feature = "breakpoint-resume")]
-        let save_data = ||async{
+            let save_data = || async {
             if let Some(notifies) = breakpoint_resume.as_ref() {
                 #[cfg(feature = "tracing")]
                     let span = tracing::info_span!("Archive Data");
@@ -258,6 +258,7 @@ impl ChunkManager {
                         #[cfg(feature = "breakpoint-resume")]
                         save_data().await;
                         if is_iter_finished {
+                            println!("downloading_chunk_count {}",downloading_chunk_count);
                             if downloading_chunk_count == 0 {
                                 debug_assert_eq!(
                                     self.chunk_iterator.content_length,
@@ -269,7 +270,6 @@ impl ChunkManager {
                             match download_next_chunk().await {
                                 None => {
                                     is_iter_finished = true;
-                                    break;
                                 }
                                 Some(future) => futures_unordered.push(future)
                             }

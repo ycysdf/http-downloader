@@ -10,7 +10,7 @@ use tokio::select;
 use tokio::sync;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ChunkManager, DownloadError, DownloadedLenChangeNotify, DownloadingEndCause};
+use crate::{ChunkManager, DownloadedLenChangeNotify, DownloadError, DownloadingEndCause};
 
 #[derive(Debug)]
 pub struct SingleDownload {

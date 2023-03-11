@@ -177,7 +177,7 @@ impl HttpDownloaderBuilder {
     }
 
     pub fn build<
-        DEB:DownloadExtensionBuilder,
+        DEB: DownloadExtensionBuilder,
     >(
         self,
         extension_builder: DEB,

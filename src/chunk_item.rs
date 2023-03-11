@@ -18,7 +18,6 @@ use tracing::Instrument;
 
 use crate::{ChunkInfo, ChunkManager, ChunkRange, DownloadError, DownloadingEndCause};
 
-
 pub trait DownloadedLenChangeNotify: Send + Sync {
     fn receive_len(&self, len: usize) -> OptionFuture<BoxFuture<()>>;
 }

@@ -59,7 +59,7 @@ async fn main() -> Result<()> {
     tokio::spawn({
         let mut downloaded_len_receiver = downloader.downloaded_len_receiver().clone();
         async move {
-            let total_len = downloader.total_size().await;
+            let total_len = downloader.total_size_future().await;
             if let Some(total_len) = total_len {
                 info!("Total size: {:.2} Mb",total_len.get() as f64 / 1024_f64/ 1024_f64);
             }
