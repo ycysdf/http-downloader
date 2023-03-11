@@ -1,6 +1,6 @@
 [package]
 name = "http-downloader"
-version = "0.2.3"
+version = "0.3.0"
 authors = ["ycysdf"]
 categories = ["download", "http", "network"]
 description = "A http download library that supports multithreading and resumable"

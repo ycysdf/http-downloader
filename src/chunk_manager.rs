@@ -258,7 +258,6 @@ impl ChunkManager {
                         #[cfg(feature = "breakpoint-resume")]
                         save_data().await;
                         if is_iter_finished {
-                            println!("downloading_chunk_count {}",downloading_chunk_count);
                             if downloading_chunk_count == 0 {
                                 debug_assert_eq!(
                                     self.chunk_iterator.content_length,
