@@ -22,8 +22,6 @@
   </h4>
 </div>
 
-> The project is being refactored and will not dependent on the asynchronous runtime
-
 ## Features
 
 - Multithreaded download
@@ -40,7 +38,6 @@
 ```toml
 http-downloader = { version = "0.1" }
 url = { version = "2" }
-tokio = { version = "1", features = ["rt", "macros"] }
 ```
 
 ## A simple http downloader
@@ -135,7 +132,7 @@ async fn main() -> Result<()> {
   tokio::spawn({
     let mut downloaded_len_receiver = downloader.downloaded_len_receiver().clone();
     async move {
-      let total_len = downloader.total_size().await;
+      let total_len = downloader.total_size_future().await;
       if let Some(total_len) = total_len {
         info!("Total size: {:.2} Mb",total_len.get() as f64 / 1024_f64/ 1024_f64);
       }

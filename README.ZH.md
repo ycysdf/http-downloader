@@ -24,8 +24,6 @@
 
 这个库是我正在做的一个下载器的 Http 下载部分，目前没有编写单元测试，可能存在一些没发现bug，欢迎贡献代码
 
-> 项目正在准备进行重构，将不依赖异步运行时
-
 ## 功能：
 
 - 多线程下载
@@ -66,7 +64,6 @@ bson-file-archiver = ["breakpoint-resume", "tracing", "serde", "bson", "url/serd
 ```toml
 http-downloader = { version = "0.1" }
 url = { version = "2" }
-tokio = { version = "1", features = ["rt", "macros"] }
 ```
 
 ## 终端 UI
@@ -146,7 +143,7 @@ async fn main() -> Result<()> {
     tokio::spawn({
         let mut downloaded_len_receiver = downloader.downloaded_len_receiver().clone();
         async move {
-            let total_len = downloader.total_size().await;
+            let total_len = downloader.total_size_future().await;
             if let Some(total_len) = total_len {
                 info!("Total size: {:.2} Mb",total_len.get() as f64 / 1024_f64/ 1024_f64);
             }
