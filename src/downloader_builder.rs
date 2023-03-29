@@ -25,18 +25,17 @@ pub struct HttpDownloadConfig {
     pub header_map: HeaderMap,
     pub downloaded_len_send_interval: Option<Duration>,
     pub chunks_send_interval: Option<Duration>,
-    pub handle_zero_content: bool,
     pub strict_check_accept_ranges: bool,
     pub http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
 }
 
 impl HttpDownloadConfig {
+    /// 下载文件路径
     pub fn file_path(&self) -> PathBuf {
         self.save_dir.join(&self.file_name)
     }
 
-
-    pub fn create_http_request(&self) -> reqwest::Request {
+    pub(crate) fn create_http_request(&self) -> reqwest::Request {
         let mut request = reqwest::Request::new(reqwest::Method::GET, (*self.url).clone());
         let header_map = request.headers_mut();
         header_map.insert(reqwest::header::ACCEPT, headers::HeaderValue::from_str("*/*").unwrap());
@@ -72,7 +71,6 @@ pub struct HttpDownloaderBuilder {
     header_map: HeaderMap,
     downloaded_len_send_interval: Option<Duration>,
     chunks_send_interval: Option<Duration>,
-    handle_zero_content: bool,
     strict_check_accept_ranges: bool,
     http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
 }
@@ -96,7 +94,6 @@ impl HttpDownloaderBuilder {
             header_map: Default::default(),
             downloaded_len_send_interval: Some(Duration::from_millis(300)),
             chunks_send_interval: Some(Duration::from_millis(300)),
-            handle_zero_content: false,
             strict_check_accept_ranges: true,
             http_request_configure: None,
             set_len_in_advance: false,
@@ -108,14 +105,19 @@ impl HttpDownloaderBuilder {
         self
     }
 
+    /// 当目录不存在时，是否创建它
     pub fn create_dir(mut self, create_dir: bool) -> Self {
         self.create_dir = create_dir;
         self
     }
+
+    /// 是否提前设置文件长度
     pub fn set_len_in_advance(mut self, set_len_in_advance: bool) -> Self {
         self.set_len_in_advance = set_len_in_advance;
         self
     }
+
+    /// 下载长度发送间隔
     pub fn downloaded_len_send_interval(
         mut self,
         downloaded_len_send_interval: Option<Duration>,
@@ -123,16 +125,20 @@ impl HttpDownloaderBuilder {
         self.downloaded_len_send_interval = downloaded_len_send_interval;
         self
     }
+
+    /// chunks 发送间隔
     pub fn chunks_send_interval(mut self, chunks_send_interval: Option<Duration>) -> Self {
         self.chunks_send_interval = chunks_send_interval;
         self
     }
 
+    /// HTTP 请求重试次数
     pub fn request_retry_count(mut self, request_retry_count: u8) -> Self {
         self.request_retry_count = request_retry_count;
         self
     }
 
+    /// 请求头
     pub fn header_map(mut self, header_map: HeaderMap) -> Self {
         self.header_map = header_map;
         self
@@ -143,39 +149,45 @@ impl HttpDownloaderBuilder {
         self
     }*/
 
+    /// 文件名称
     pub fn file_name(mut self, file_name: Option<String>) -> Self {
         self.file_name = file_name;
         self
     }
 
+    /// chunk 大小
     pub fn chunk_size(mut self, chunk_size: NonZeroUsize) -> Self {
         self.chunk_size = chunk_size;
         self
     }
 
+    /// HTTP Etag 校验
     pub fn etag(mut self, etag: Option<ETag>) -> Self {
         self.etag = etag;
         self
     }
-    pub fn handle_zero_content(mut self, handle_zero_content: bool) -> Self {
-        self.handle_zero_content = handle_zero_content;
-        self
-    }
+
+    /// 是否严格检测 Accept-Ranges 响应头
     pub fn strict_check_accept_ranges(mut self, strict_check_accept_ranges: bool) -> Self {
         self.strict_check_accept_ranges = strict_check_accept_ranges;
         self
     }
 
+
+    /// 下载连接数
     pub fn download_connection_count(mut self, download_connection_count: NonZeroU8) -> Self {
         self.download_connection_count = download_connection_count;
         self
     }
 
+    /// reqwest::Request 配置方法
     pub fn http_request_configure(mut self, http_request_configure: impl Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static) -> Self {
         self.http_request_configure = Some(Box::new(http_request_configure));
         self
     }
 
+    /// 构建
+    /// 参数为需要开启的扩展，多个扩展用元组来表示，如果不需要扩展可以传入`()`空元组
     pub fn build<
         DEB: DownloadExtensionBuilder,
     >(
@@ -201,7 +213,6 @@ impl HttpDownloaderBuilder {
                 header_map: self.header_map,
                 downloaded_len_send_interval: self.downloaded_len_send_interval,
                 chunks_send_interval: self.chunks_send_interval,
-                handle_zero_content: self.handle_zero_content,
                 strict_check_accept_ranges: self.strict_check_accept_ranges,
                 http_request_configure: self.http_request_configure,
             }),

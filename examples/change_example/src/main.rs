@@ -27,7 +27,7 @@ async fn main() -> Result<()> {
             }));
 
     let download_future = downloader.prepare_download().await?;
-    let mut downloader = Arc::new(downloader);
+    let downloader = Arc::new(downloader);
 
     tokio::spawn({
         let downloader = downloader.clone();
@@ -64,8 +64,9 @@ async fn main() -> Result<()> {
     tokio::spawn({
         let downloader = downloader.clone();
         async move {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-            let chunks_stream = downloader.chunks_stream().await.unwrap();
+            // 等待大小信息获取完毕
+            let _ = downloader.total_size_future().await;
+            let chunks_stream = downloader.chunks_stream().unwrap();
             pin_mut!(chunks_stream);
             while let Some(item) = chunks_stream.next().await {
                 println!("chunk count :{}", item.len());

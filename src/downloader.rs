@@ -429,33 +429,19 @@ impl HttpFileDownloader {
                     None
                 }
             };
-            let mut content_length = response
+            let content_length = response
                 .headers()
                 .typed_get::<headers::ContentLength>()
-                .map(|n| n.0);
-            if config.handle_zero_content {
-                content_length = content_length.and_then(|n| if n == 0 { None } else { Some(n) });
-            }
-            let accept_ranges = response.headers().typed_get::<headers::AcceptRanges>();
+                .map(|n| n.0)
+                .and_then(|n| if n == 0 { None } else { Some(n) });
 
-            if let Some(content_length) = content_length {
-                if content_length == 0 {
-                    total_size_semaphore.add_permits(1);
-                    return Err(DownloadError::ContentLengthInvalid);
-                }
+            if let Some(0) = content_length {
+                total_size_semaphore.add_permits(1);
+                return Err(DownloadError::ContentLengthInvalid);
             }
             content_length_arc.store(content_length.unwrap_or(0), Ordering::Relaxed);
-            total_size_semaphore.add_permits(1);
 
-            let mut options = std::fs::OpenOptions::new();
-            (config.open_option)(&mut options);
-            let mut file = tokio::fs::OpenOptions::from(options)
-                .open(config.file_path())
-                .await?;
-            if config.set_len_in_advance {
-                file.set_len(content_length.unwrap()).await?
-            }
-            file.seek(SeekFrom::Start(0)).await?;
+            let accept_ranges = response.headers().typed_get::<headers::AcceptRanges>();
 
             let is_ranges_bytes_none = accept_ranges.is_none();
             let is_ranges_bytes =
@@ -525,12 +511,24 @@ impl HttpFileDownloader {
                 *guard = Some((end_receiver, state.clone()));
             }
 
+            total_size_semaphore.add_permits(1);
+
             for oneshot in downloading_state_oneshot_vec.into_iter() {
                 oneshot.send(state.clone()).unwrap_or_else(|_| {
                     #[cfg(feature = "tracing")]
                     tracing::trace!("send download_way failed!");
                 });
             }
+
+            let mut options = std::fs::OpenOptions::new();
+            (config.open_option)(&mut options);
+            let mut file = tokio::fs::OpenOptions::from(options)
+                .open(config.file_path())
+                .await?;
+            if config.set_len_in_advance {
+                file.set_len(content_length.unwrap()).await?
+            }
+            file.seek(SeekFrom::Start(0)).await?;
 
             let dec_result = match &state.download_way {
                 DownloadWay::Ranges(item) => {
@@ -590,6 +588,8 @@ impl ExtendedHttpFileDownloader {
             downloader_wrapper,
         }
     }
+
+    /// 准备下载
     pub async fn prepare_download(&mut self) -> Result<DownloadFuture, DownloadStartError> {
         self.downloader_wrapper.prepare_download(&mut self.inner).await?;
         let prepare_download_result = self.inner.download().await;
@@ -597,26 +597,31 @@ impl ExtendedHttpFileDownloader {
         Ok(self.downloader_wrapper.download(&mut self.inner, download_future).await?)
     }
 
+    /// 下载
     pub async fn download(&mut self) -> Result<DownloadingEndCause, DownloadToEndError> {
         Ok(self.prepare_download().await?.await?)
     }
 
+    /// 取消下载
     pub async fn cancel(&self) {
         self.downloader_wrapper.on_cancel().await;
         self.inner.cancel();
     }
 
+    /// 是否正在下载
     #[inline]
     pub fn is_downloading(&self) -> bool {
         self.inner.is_downloading()
     }
 
+    /// 已下载长度流
     #[cfg(feature = "async-stream")]
     #[inline]
     pub fn downloaded_len_stream(&self) -> impl Stream<Item=u64> + 'static {
         self.inner.downloaded_len_stream()
     }
 
+    /// 更改连接数
     #[inline]
     pub fn change_connection_count(
         &self,
@@ -624,57 +629,85 @@ impl ExtendedHttpFileDownloader {
     ) -> Result<(), ChangeConnectionCountError> {
         self.inner.change_connection_count(connection_count)
     }
+
+    /// 更改 chunk 大小
     #[inline]
     pub fn change_chunk_size(&self, chunk_size: NonZeroUsize) -> Result<(), ChangeChunkSizeError> {
         self.inner.change_chunk_size(chunk_size)
     }
 
+    /// chunks 流，如果还真正的开始下载（获取了请求响应内容）会返回 None，可通过 `total_size_future().await` 等待获取它，避免得到 None
     #[cfg(feature = "async-stream")]
     #[inline]
     pub fn chunks_stream(&self) -> Option<impl Stream<Item=Vec<Arc<ChunkItem>>> + 'static> {
         self.inner.chunks_stream()
     }
+
+    /// chunks 信息流，如果还真正的开始下载（获取了请求响应内容）会返回 None，可通过 `total_size_future().await` 等待获取它，避免得到 None
     #[cfg(feature = "async-stream")]
     #[inline]
     pub fn chunks_info_stream(&self) -> Option<impl Stream<Item=ChunksInfo>> {
         self.inner.chunks_info_stream()
     }
+
+    /// 已下载长度
     #[inline]
     pub fn downloaded_len(&self) -> u64 {
         self.inner.downloaded_len()
     }
+
+    /// 总大小，会等待服务器响应，如果文件无大小则返回 None
     #[inline]
     pub fn total_size_future(&self) -> impl Future<Output=Option<NonZeroU64>> + 'static {
         self.inner.total_size_future()
     }
+
+    /// 总大小，如果文件无大小或者还没有得到服务器响应时返回 None
     #[inline]
     pub fn current_total_size(&self) -> Option<NonZeroU64> {
         self.inner.current_total_size()
     }
+
+    /// 总大小的`Arc`引用
     #[inline]
     pub fn atomic_total_size(&self) -> Arc<AtomicU64> {
         self.inner.content_length.clone()
     }
+
+    /// 获取 chunks
     #[inline]
     pub async fn get_chunks(&self) -> Vec<Arc<ChunkItem>> {
         self.inner.get_chunks().await
     }
+
+    /// 获取文件路径
     #[inline]
     pub fn get_file_path(&self) -> PathBuf {
         self.inner.get_file_path()
     }
 
+    /// 获取 DownloadingState，如果下载没有开始则返回 None
     #[inline]
     pub fn get_downloading_state(&self) -> Option<Arc<DownloadingState>> {
         self.inner.get_downloading_state()
     }
 
+    /// 配置
     #[inline]
     pub fn config(&self) -> &HttpDownloadConfig {
         &self.inner.config
     }
+
+    /// 已下载长度接收器
     #[inline]
     pub fn downloaded_len_receiver(&self) -> &sync::watch::Receiver<u64> {
         &self.inner.downloaded_len_receiver
+    }
+
+    /// DownloadingState 接收器
+    pub fn downloading_state_receiver(&mut self)-> sync::oneshot::Receiver<Arc<DownloadingState>>{
+        let (sender,receiver) = sync::oneshot::channel();
+        self.inner.downloading_state_oneshot_vec.push(sender);
+        receiver
     }
 }
