@@ -2,7 +2,7 @@
 name = "http-downloader"
 version = "0.3.0"
 authors = ["ycysdf"]
-categories = ["download", "http", "network"]
+categories = ["web-programming::http-client"]
 description = "支持多线程与断点续传的 Http 下载库"
 edition = "2021"
 homepage = "https://github.com/ycysdf/http-downloader"
