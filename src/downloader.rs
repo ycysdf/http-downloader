@@ -141,7 +141,7 @@ pub struct HttpFileDownloader {
 
 impl HttpFileDownloader {
     pub fn new(client: reqwest::Client, config: Arc<HttpDownloadConfig>) -> Self {
-        let cancel_token = CancellationToken::new();
+        let cancel_token = config.cancel_token.clone().unwrap_or_default();
         let (downloaded_len_sender, downloaded_len_receiver) = sync::watch::channel::<u64>(0);
         let total_size_semaphore = Arc::new(sync::Semaphore::new(0));
 

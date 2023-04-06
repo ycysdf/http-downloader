@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use headers::{ETag, HeaderMap, HeaderMapExt};
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 use crate::{DownloadExtensionBuilder, ExtendedHttpFileDownloader, HttpFileDownloader};
@@ -27,6 +28,7 @@ pub struct HttpDownloadConfig {
     pub chunks_send_interval: Option<Duration>,
     pub strict_check_accept_ranges: bool,
     pub http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
+    pub cancel_token: Option<CancellationToken>,
 }
 
 impl HttpDownloadConfig {
@@ -73,6 +75,7 @@ pub struct HttpDownloaderBuilder {
     chunks_send_interval: Option<Duration>,
     strict_check_accept_ranges: bool,
     http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
+    cancel_token: Option<CancellationToken>,
 }
 
 impl HttpDownloaderBuilder {
@@ -97,6 +100,7 @@ impl HttpDownloaderBuilder {
             strict_check_accept_ranges: true,
             http_request_configure: None,
             set_len_in_advance: false,
+            cancel_token: None,
         }
     }
 
@@ -108,6 +112,11 @@ impl HttpDownloaderBuilder {
     /// 当目录不存在时，是否创建它
     pub fn create_dir(mut self, create_dir: bool) -> Self {
         self.create_dir = create_dir;
+        self
+    }
+
+    pub fn cancel_token(mut self, cancel_token: Option<CancellationToken>) -> Self {
+        self.cancel_token = cancel_token;
         self
     }
 
@@ -215,6 +224,7 @@ impl HttpDownloaderBuilder {
                 chunks_send_interval: self.chunks_send_interval,
                 strict_check_accept_ranges: self.strict_check_accept_ranges,
                 http_request_configure: self.http_request_configure,
+                cancel_token: self.cancel_token,
             }),
         );
         let (extension, es) = extension_builder.build(&mut downloader);
