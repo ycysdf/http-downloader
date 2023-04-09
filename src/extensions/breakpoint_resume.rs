@@ -12,15 +12,15 @@ use tokio::{select, sync};
 use crate::{BreakpointResume, ChunkInfo, ChunkRange, DownloadArchiveData, DownloadError, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingEndCause, DownloadingState, DownloadStartError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 
 pub enum FileSave {
-    Absolute(PathBuf),
-    Suffix(String),
+    AbsolutePath(PathBuf),
+    OriginPathWithSuffix(String),
 }
 
 impl FileSave {
     pub fn get_file_path(&self, origin_file: &Path) -> Cow<PathBuf> {
         match self {
-            FileSave::Absolute(path) => Cow::Borrowed(path),
-            FileSave::Suffix(suffix) => Cow::Owned(
+            FileSave::AbsolutePath(path) => Cow::Borrowed(path),
+            FileSave::OriginPathWithSuffix(suffix) => Cow::Owned(
                 origin_file.with_extension(OsStr::new(&format!(
                     "{}.{}",
                     origin_file

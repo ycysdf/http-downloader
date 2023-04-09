@@ -126,6 +126,18 @@ impl HttpDownloaderBuilder {
         self
     }
 
+    /// HTTP 请求重试次数
+    pub fn request_retry_count(mut self, request_retry_count: u8) -> Self {
+        self.request_retry_count = request_retry_count;
+        self
+    }
+
+    /// 请求头
+    pub fn header_map(mut self, header_map: HeaderMap) -> Self {
+        self.header_map = header_map;
+        self
+    }
+
     /// 下载长度发送间隔
     pub fn downloaded_len_send_interval(
         mut self,
@@ -141,17 +153,6 @@ impl HttpDownloaderBuilder {
         self
     }
 
-    /// HTTP 请求重试次数
-    pub fn request_retry_count(mut self, request_retry_count: u8) -> Self {
-        self.request_retry_count = request_retry_count;
-        self
-    }
-
-    /// 请求头
-    pub fn header_map(mut self, header_map: HeaderMap) -> Self {
-        self.header_map = header_map;
-        self
-    }
     /*
     pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
         self.timeout = timeout;
@@ -195,7 +196,7 @@ impl HttpDownloaderBuilder {
         self
     }
 
-    /// 构建
+    /// 构建 `ExtendedHttpFileDownloader`
     /// 参数为需要开启的扩展，多个扩展用元组来表示，如果不需要扩展可以传入`()`空元组
     pub fn build<
         DEB: DownloadExtensionBuilder,

@@ -269,6 +269,13 @@ impl ChunkManager {
                             match download_next_chunk().await {
                                 None => {
                                     is_iter_finished = true;
+                                    if downloading_chunk_count == 0 {
+                                        debug_assert_eq!(
+                                            self.chunk_iterator.content_length,
+                                            *self.downloaded_len_sender.borrow()
+                                        );
+                                        break;
+                                    }
                                 }
                                 Some(future) => futures_unordered.push(future)
                             }

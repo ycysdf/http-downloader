@@ -1,6 +1,6 @@
 [package]
 name = "http-downloader"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["ycysdf"]
 categories = ["web-programming::http-client"]
 description = "支持多线程与断点续传的 Http 下载库"
