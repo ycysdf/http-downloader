@@ -19,8 +19,6 @@ use tokio::sync::watch::error::SendError;
 use tokio::task::JoinError;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
-#[cfg(feature = "tracing")]
-use tracing::Instrument;
 
 use crate::{ChunkData, ChunkItem, ChunkIterator, ChunkManager, ChunksInfo, DownloadArchiveData, DownloadedLenChangeNotify, DownloaderWrapper, DownloadFuture, DownloadWay, HttpDownloadConfig, RemainingChunks, SingleDownload};
 
@@ -393,18 +391,25 @@ impl HttpFileDownloader {
             let breakpoint_resume = self.breakpoint_resume.take();
 
         async move {
-            let response = client.execute(config.create_http_request());
-            #[cfg(feature = "tracing")]
-                let response = response.instrument(tracing::info_span!("request for content_length"));
+            let mut retry_count = config.request_retry_count;
+            let response = loop {
+                let response = client.execute(config.create_http_request())
+                    .await.and_then(|n| n.error_for_status());
 
-            let response = match response.await {
-                Ok(response) => response,
-                Err(err) => {
-                    total_size_semaphore.add_permits(1);
-                    return Err(err.into());
+                if response.is_err()&&retry_count < config.request_retry_count {
+                    retry_count += 1;
+                    #[cfg(feature = "tracing")]
+                    tracing::trace!(
+                            "Request error! {:?},retry_info: {}/{}",
+                            response.unwrap_err(),
+                            retry_count,
+                            config.request_retry_count
+                        );
+                    continue;
                 }
+                break response;
             };
-            let response = match response.error_for_status() {
+            let response = match response {
                 Ok(response) => response,
                 Err(err) => {
                     total_size_semaphore.add_permits(1);
@@ -705,8 +710,8 @@ impl ExtendedHttpFileDownloader {
     }
 
     /// DownloadingState 接收器
-    pub fn downloading_state_receiver(&mut self)-> sync::oneshot::Receiver<Arc<DownloadingState>>{
-        let (sender,receiver) = sync::oneshot::channel();
+    pub fn downloading_state_receiver(&mut self) -> sync::oneshot::Receiver<Arc<DownloadingState>> {
+        let (sender, receiver) = sync::oneshot::channel();
         self.inner.downloading_state_oneshot_vec.push(sender);
         receiver
     }
