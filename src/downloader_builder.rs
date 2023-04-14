@@ -10,11 +10,20 @@ use url::Url;
 
 use crate::{DownloadExtensionBuilder, ExtendedHttpFileDownloader, HttpFileDownloader};
 
+#[derive(Debug,PartialEq)]
+pub enum HttpRedirectionHandle{
+    Invalid,
+    RequestNewLocation{
+        max_times: usize
+    }
+}
+
 pub struct HttpDownloadConfig {
     // 提前设置长度，如果存储空间不足将提前报错
     pub set_len_in_advance: bool,
     pub download_connection_count: NonZeroU8,
     pub chunk_size: NonZeroUsize,
+    pub chunks_send_interval: Option<Duration>,
     pub save_dir: PathBuf,
     pub file_name: String,
     pub open_option: Box<dyn Fn(&mut std::fs::OpenOptions) + Send + Sync + 'static>,
@@ -25,10 +34,10 @@ pub struct HttpDownloadConfig {
     // pub timeout: Option<Duration>,
     pub header_map: HeaderMap,
     pub downloaded_len_send_interval: Option<Duration>,
-    pub chunks_send_interval: Option<Duration>,
     pub strict_check_accept_ranges: bool,
     pub http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
     pub cancel_token: Option<CancellationToken>,
+    pub handle_redirection:HttpRedirectionHandle
 }
 
 impl HttpDownloadConfig {
@@ -37,15 +46,20 @@ impl HttpDownloadConfig {
         self.save_dir.join(&self.file_name)
     }
 
-    pub(crate) fn create_http_request(&self) -> reqwest::Request {
-        let mut request = reqwest::Request::new(reqwest::Method::GET, (*self.url).clone());
+    pub(crate) fn create_http_request(&self, redirection_location:Option<&str>) -> reqwest::Request {
+
+        let mut url = (*self.url).clone().clone();
+        if let Some(location) = redirection_location {
+            url.set_path(location);
+        }
+        let mut request = reqwest::Request::new(reqwest::Method::GET,url );
         let header_map = request.headers_mut();
         header_map.insert(reqwest::header::ACCEPT, headers::HeaderValue::from_str("*/*").unwrap());
         header_map.typed_insert(headers::Connection::keep_alive());
         for (header_name, header_value) in self.header_map.iter() {
             header_map.insert(header_name, header_value.clone());
         }
-        // 限速后超时会出现异常
+        // 限速后超时会出现异常?
         *request.timeout_mut() = None;
         // *request.timeout_mut() = self.config.timeout;
         match self.http_request_configure.as_ref() {
@@ -76,6 +90,7 @@ pub struct HttpDownloaderBuilder {
     strict_check_accept_ranges: bool,
     http_request_configure: Option<Box<dyn Fn(reqwest::Request) -> reqwest::Request + Send + Sync + 'static>>,
     cancel_token: Option<CancellationToken>,
+    handle_redirection: HttpRedirectionHandle,
 }
 
 impl HttpDownloaderBuilder {
@@ -101,6 +116,9 @@ impl HttpDownloaderBuilder {
             http_request_configure: None,
             set_len_in_advance: false,
             cancel_token: None,
+            handle_redirection: HttpRedirectionHandle::RequestNewLocation {
+                max_times:8
+            },
         }
     }
 
@@ -117,6 +135,11 @@ impl HttpDownloaderBuilder {
 
     pub fn cancel_token(mut self, cancel_token: Option<CancellationToken>) -> Self {
         self.cancel_token = cancel_token;
+        self
+    }
+
+    pub fn handle_redirection(mut self, http_redirection_handle: HttpRedirectionHandle) -> Self {
+        self.handle_redirection = http_redirection_handle;
         self
     }
 
@@ -183,7 +206,6 @@ impl HttpDownloaderBuilder {
         self
     }
 
-
     /// 下载连接数
     pub fn download_connection_count(mut self, download_connection_count: NonZeroU8) -> Self {
         self.download_connection_count = download_connection_count;
@@ -226,6 +248,7 @@ impl HttpDownloaderBuilder {
                 strict_check_accept_ranges: self.strict_check_accept_ranges,
                 http_request_configure: self.http_request_configure,
                 cancel_token: self.cancel_token,
+                handle_redirection: self.handle_redirection,
             }),
         );
         let (extension, es) = extension_builder.build(&mut downloader);

@@ -2,6 +2,7 @@ use std::fmt::Debug;
 use std::sync::Arc;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use bytes::Bytes;
 use reqwest::Response;
 use tokio::fs::File;
@@ -10,7 +11,7 @@ use tokio::select;
 use tokio::sync;
 use tokio_util::sync::CancellationToken;
 
-use crate::{ChunkManager, DownloadedLenChangeNotify, DownloadError, DownloadingEndCause};
+use crate::{ChunkManager, DownloadArchiveData, DownloadedLenChangeNotify, DownloadError, DownloadingEndCause, HttpDownloadConfig};
 
 #[derive(Debug)]
 pub struct SingleDownload {
@@ -82,6 +83,27 @@ impl SingleDownload {
             _ = self.cancel_token.cancelled() => {DownloadingEndCause::Cancelled}
         })
     }
+}
+
+#[async_trait]
+pub trait ResponseHandler {
+    fn new(
+        config: &Arc<HttpDownloadConfig>,
+        cancel_token: CancellationToken,
+        archive_data: Option<Box<DownloadArchiveData>>,
+        content_length: u64,
+        client: reqwest::Client,
+        downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
+    ) -> Self;
+
+    async fn download(
+        &self,
+        file: File,
+        response: Box<Response>,
+        downloaded_len_receiver: Option<Arc<dyn DownloadedLenChangeNotify>>,
+        config: &Arc<HttpDownloadConfig>,
+        redirection_location: Option<String>,
+    ) -> Result<DownloadingEndCause, DownloadError>;
 }
 
 pub enum DownloadWay {

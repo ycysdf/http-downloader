@@ -3,11 +3,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use async_trait::async_trait;
 use futures_util::future::{BoxFuture, OptionFuture};
 use futures_util::FutureExt;
+use tokio::select;
 
-use crate::{DownloadedLenChangeNotify, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadStartError, HttpFileDownloader};
+use crate::{DownloadedLenChangeNotify, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingState, DownloadStartError, HttpFileDownloader};
 
 pub struct DownloadSpeedLimiterExtension<Limiter: SpeedLimiter> {
     limiter: Arc<Limiter>,
@@ -42,17 +42,38 @@ impl<Limiter: SpeedLimiter> DownloadSpeedLimiterState<Limiter> {
 
 pub struct DownloadSpeedLimiterDownloaderWrapper<Limiter: SpeedLimiter> {
     limiter: Arc<Limiter>,
+    pub receiver: Option<tokio::sync::oneshot::Receiver<Arc<DownloadingState>>>,
 }
 
-#[async_trait]
 impl<Limiter: SpeedLimiter> DownloaderWrapper for DownloadSpeedLimiterDownloaderWrapper<Limiter> {
-    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+    fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+
         downloader.downloaded_len_change_notify = Some(self.limiter.clone());
+        downloader.downloading_state_oneshot_vec.push(sender);
+        self.receiver = Some(receiver);
         Ok(())
     }
-    async fn download(&mut self, _downloader: &mut HttpFileDownloader, download_future: DownloadFuture) -> Result<DownloadFuture, DownloadStartError> {
-        self.limiter.reset().await;
-        Ok(download_future)
+    fn download(&mut self, _downloader: &mut HttpFileDownloader, download_future: DownloadFuture) -> Result<DownloadFuture, DownloadStartError> {
+        let receiver = self.receiver.take().unwrap();
+
+        let limiter = self.limiter.clone();
+        let future = async move {
+            if receiver.await.is_ok(){
+                limiter.reset().await;
+            }
+            futures_util::future::pending::<()>()
+        };
+
+        Ok(async move {
+            select! {
+                _ = future => {unreachable!()},
+                r = download_future => {
+                    r
+                }
+            }
+        }
+            .boxed())
     }
 }
 
@@ -64,6 +85,7 @@ impl<Limiter: SpeedLimiter> DownloadExtensionBuilder for DownloadSpeedLimiterExt
         (
             DownloadSpeedLimiterDownloaderWrapper {
                 limiter: self.limiter.clone(),
+                receiver: None,
             },
             DownloadSpeedLimiterState { speed_limiter: self.limiter },
         )

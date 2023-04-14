@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use futures_util::FutureExt;
 #[cfg(feature = "async-stream")]
 use futures_util::Stream;
@@ -73,16 +72,15 @@ impl DownloadExtensionBuilder for DownloadSpeedTrackerExtension {
     }
 }
 
-#[async_trait]
 impl DownloaderWrapper for DownloadSpeedDownloaderWrapper {
-    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+    fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
         let (sender, download_way_receiver) = sync::oneshot::channel();
         downloader.downloading_state_oneshot_vec.push(sender);
         self.downloading_state_receiver = Some(download_way_receiver);
         Ok(())
     }
 
-    async fn download(
+    fn download(
         &mut self,
         _downloader: &mut HttpFileDownloader,
         download_future: DownloadFuture,

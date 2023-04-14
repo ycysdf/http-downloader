@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anyhow::Result;
-use async_trait::async_trait;
+use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
@@ -43,16 +43,9 @@ pub enum DownloadEndInfo<'a> {
     DownloadEnd(&'a Result<DownloadingEndCause, DownloadError>),
 }
 
-#[async_trait]
 pub trait DownloadDataArchiver: Send + Sync + 'static {
-    async fn save(&self, data: Box<DownloadArchiveData>) -> Result<(), anyhow::Error>;
-    async fn load(&self) -> Result<Option<Box<DownloadArchiveData>>, anyhow::Error>;
-    async fn download_started(
-        &self,
-        download_way: &Arc<DownloadingState>,
-        is_resume: bool,
-    ) -> Result<(), anyhow::Error>;
-    async fn download_ended<'a>(&'a self, end_info: DownloadEndInfo<'a>);
+    fn save(&self, data: Box<DownloadArchiveData>) -> BoxFuture<'static,Result<(), anyhow::Error>>;
+    fn load(&self) -> BoxFuture<'static,Result<Option<Box<DownloadArchiveData>>, anyhow::Error>>;
 }
 
 pub trait DownloadDataArchiverBuilder {
@@ -93,42 +86,29 @@ impl<T: DownloadDataArchiverBuilder + 'static> DownloadExtensionBuilder for Down
     }
 }
 
-#[async_trait]
 impl<T: DownloadDataArchiverBuilder + 'static> DownloaderWrapper for DownloadBreakpointResumeDownloaderWrapper<T>
 {
-    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+    fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
         let (sender, receiver) = sync::oneshot::channel();
 
         downloader.breakpoint_resume = Some(Arc::new(BreakpointResume::default()));
-        downloader.archive_data = self.download_archiver.load().await?;
+        downloader.archive_data_future = Some(self.download_archiver.load());
         downloader.downloading_state_oneshot_vec.push(sender);
         self.breakpoint_resume = downloader.breakpoint_resume.clone();
         self.receiver = Some(receiver);
         Ok(())
     }
 
-    async fn handle_prepare_download_result(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
-        match prepare_download_result {
-            Ok(download_future) => Ok(download_future),
-            Err(err) => {
-                self.download_archiver
-                    .download_ended(DownloadEndInfo::StartError(&err))
-                    .await;
-                return Err(err);
-            }
-        }
-    }
-
-    async fn download(
+    fn download(
         &mut self,
-        downloader: &mut HttpFileDownloader,
+        _downloader: &mut HttpFileDownloader,
         download_future: DownloadFuture,
     ) -> Result<DownloadFuture, DownloadStartError>
     {
         let notifies = self.breakpoint_resume.as_ref().unwrap().clone();
         let receiver = self.receiver.take().unwrap();
 
-        let is_resume = downloader.archive_data.is_some();
+        // let is_resume = downloader.archive_data_future.is_some();
 
         let future = {
             let download_archiver = self.download_archiver.clone();
@@ -136,9 +116,6 @@ impl<T: DownloadDataArchiverBuilder + 'static> DownloaderWrapper for DownloadBre
                 let downloading_state = receiver
                     .await
                     .map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
-                download_archiver
-                    .download_started(&downloading_state, is_resume)
-                    .await?;
                 if let DownloadWay::Ranges(chunk_manager) = &downloading_state.download_way {
                     let mut notified = notifies.data_archive_notify.notified();
 
@@ -180,13 +157,12 @@ impl<T: DownloadDataArchiverBuilder + 'static> DownloaderWrapper for DownloadBre
             }
         };
 
-        let download_archiver = self.download_archiver.clone();
+        // let download_archiver = self.download_archiver.clone();
         #[allow(clippy::collapsible_match)]
         Ok(async move {
             select! {
                 r = future => {r},
                 r = download_future => {
-                    download_archiver.download_ended(DownloadEndInfo::DownloadEnd(&r)).await;
                     r
                 }
             }

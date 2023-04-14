@@ -1,5 +1,4 @@
 use anyhow::Result;
-use async_trait::async_trait;
 use futures_util::future::BoxFuture;
 
 use crate::{ChunkData, DownloadError, DownloadingEndCause, DownloadStartError, HttpFileDownloader};
@@ -18,29 +17,28 @@ pub mod status_tracker;
 pub type DownloadFuture = BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>;
 
 
-#[async_trait]
 pub trait DownloaderWrapper: Send + Sync + 'static {
-    async fn prepare_download(
+    fn prepare_download(
         &mut self,
         _downloader: &mut HttpFileDownloader,
     ) -> Result<(), DownloadStartError> {
         Ok(())
     }
-    async fn handle_prepare_download_result(
+    fn handle_prepare_download_result(
         &mut self,
         _downloader: &mut HttpFileDownloader,
         prepare_download_result: Result<DownloadFuture, DownloadStartError>,
     ) -> Result<DownloadFuture, DownloadStartError> {
         prepare_download_result
     }
-    async fn download(
+    fn download(
         &mut self,
         _downloader: &mut HttpFileDownloader,
         download_future: DownloadFuture,
     ) -> Result<DownloadFuture, DownloadStartError> {
         Ok(download_future)
     }
-    async fn on_cancel(&self) {}
+    fn on_cancel(&self) {}
 }
 
 pub trait DownloadExtensionBuilder: 'static {
@@ -66,41 +64,40 @@ macro_rules! impl_download_extension_tuple {
     (
         $(($de:ident,$ds:ident)),*
     ) => {
-        #[async_trait]
         #[allow(non_snake_case)]
         impl<
             $($de: DownloaderWrapper,)*
             > DownloaderWrapper for ($($de,)*)
         {
-            async fn prepare_download(
+            fn prepare_download(
                 &mut self,
                 downloader: &mut HttpFileDownloader,
             ) -> Result<(), DownloadStartError> {
-                let ($($de,)*) = &mut self;
-                $($de.prepare_download(downloader).await?;)*
+                let ($($de,)*) = self;
+                $($de.prepare_download(downloader)?;)*
                 Ok(())
             }
-            async fn handle_prepare_download_result(
+            fn handle_prepare_download_result(
                 &mut self,
                 downloader: &mut HttpFileDownloader,
                 prepare_download_result: Result<DownloadFuture, DownloadStartError>,
             ) -> Result<DownloadFuture, DownloadStartError> {
-                let ($($de,)*) = &mut self;
-                $(let prepare_download_result = $de.handle_prepare_download_result(downloader,prepare_download_result).await;)*
+                let ($($de,)*) = self;
+                $(let prepare_download_result = $de.handle_prepare_download_result(downloader,prepare_download_result);)*
                 prepare_download_result
             }
-            async fn download(
+            fn download(
                 &mut self,
                 downloader: &mut HttpFileDownloader,
                 download_future: DownloadFuture,
             ) -> Result<DownloadFuture, DownloadStartError> {
-                let ($($de,)*) = &mut self;
-                $(let download_future = $de.download(downloader,download_future).await?;)*
+                let ($($de,)*) = self;
+                $(let download_future = $de.download(downloader,download_future)?;)*
                 Ok(download_future)
             }
-            async fn on_cancel(&self) {
+            fn on_cancel(&self) {
                 let ($($de,)*) = &self;
-                $($de.on_cancel().await;)*
+                $($de.on_cancel();)*
             }
         }
 

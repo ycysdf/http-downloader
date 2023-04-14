@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use async_trait::async_trait;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
@@ -110,9 +109,8 @@ impl DownloadExtensionBuilder for DownloadStatusTrackerExtension {
     }
 }
 
-#[async_trait]
 impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
-    async fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
+    fn prepare_download(&mut self, downloader: &mut HttpFileDownloader) -> Result<(), DownloadStartError> {
         let (sender, download_way_receiver) = sync::oneshot::channel();
         self.downloading_state_receiver = Some(download_way_receiver);
         downloader.downloading_state_oneshot_vec.push(sender);
@@ -136,7 +134,7 @@ impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
         Ok(())
     }
 
-    async fn handle_prepare_download_result(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
+    fn handle_prepare_download_result(&mut self, _downloader: &mut HttpFileDownloader, prepare_download_result: Result<DownloadFuture, DownloadStartError>) -> Result<DownloadFuture, DownloadStartError> {
         match prepare_download_result {
             Ok(download_future) => Ok(download_future),
             Err(err) => {
@@ -146,7 +144,7 @@ impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
         }
     }
 
-    async fn download(
+    fn download(
         &mut self,
         _downloader: &mut HttpFileDownloader,
         mut download_future: DownloadFuture,
@@ -194,7 +192,7 @@ impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
             .boxed())
     }
 
-    async fn on_cancel(&self) {
+    fn on_cancel(&self) {
         self.status_sender
             .change_status(DownloaderStatus::Pending(NetworkItemPendingType::Stopping));
     }
