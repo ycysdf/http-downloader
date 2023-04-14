@@ -84,7 +84,7 @@ async fn main() -> Result<()> {
                 }
             }
 
-            let download_future = downloader.prepare_download().await?;
+            let download_future = downloader.prepare_download()?;
             futures_unordered.push(RunFuture::DownloadFuture(download_future));
             futures_unordered.push(RunFuture::Cancel(async {
                 tokio::time::sleep(Duration::from_secs(4)).await
@@ -100,7 +100,7 @@ async fn main() -> Result<()> {
                                 futures_unordered.push(RunFuture::Cancel(async {
                                     tokio::time::sleep(Duration::from_secs(4)).await
                                 }.boxed()));
-                                let download_future = downloader.prepare_download().await?;
+                                let download_future = downloader.prepare_download()?;
                                 futures_unordered.push(RunFuture::DownloadFuture(download_future));
                                 continue;
                             }

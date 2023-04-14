@@ -45,7 +45,7 @@ async fn main() -> Result<()> {
                 }
             ));
     info!("Prepare download，准备下载");
-    let download_future = downloader.prepare_download().await?;
+    let download_future = downloader.prepare_download()?;
 
     let _status = status_state.status(); // get download status， 获取状态
     let _status_receiver = status_state.status_receiver; //status watcher，状态监听器
@@ -58,8 +58,9 @@ async fn main() -> Result<()> {
     // Print download Progress
     tokio::spawn({
         let mut downloaded_len_receiver = downloader.downloaded_len_receiver().clone();
+        let total_size_future = downloader.total_size_future();
         async move {
-            let total_len = downloader.total_size_future().await;
+            let total_len = total_size_future.await;
             if let Some(total_len) = total_len {
                 info!("Total size: {:.2} Mb",total_len.get() as f64 / 1024_f64/ 1024_f64);
             }

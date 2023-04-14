@@ -38,6 +38,14 @@ pub struct DownloadBreakpointResumeExtension<T: DownloadDataArchiverBuilder> {
     pub download_archiver_builder: T,
 }
 
+impl<T: DownloadDataArchiverBuilder> DownloadBreakpointResumeExtension<T> {
+    pub fn new(download_archiver_builder:T)->Self{
+        Self{
+            download_archiver_builder
+        }
+    }
+}
+
 pub enum DownloadEndInfo<'a> {
     StartError(&'a DownloadStartError),
     DownloadEnd(&'a Result<DownloadingEndCause, DownloadError>),
@@ -46,6 +54,7 @@ pub enum DownloadEndInfo<'a> {
 pub trait DownloadDataArchiver: Send + Sync + 'static {
     fn save(&self, data: Box<DownloadArchiveData>) -> BoxFuture<'static,Result<(), anyhow::Error>>;
     fn load(&self) -> BoxFuture<'static,Result<Option<Box<DownloadArchiveData>>, anyhow::Error>>;
+    fn clear(&self){}
 }
 
 pub trait DownloadDataArchiverBuilder {

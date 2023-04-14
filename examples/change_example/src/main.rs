@@ -26,7 +26,7 @@ async fn main() -> Result<()> {
                 log: true
             }));
 
-    let download_future = downloader.prepare_download().await?;
+    let download_future = downloader.prepare_download()?;
     let downloader = Arc::new(downloader);
 
     tokio::spawn({

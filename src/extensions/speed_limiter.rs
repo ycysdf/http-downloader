@@ -62,7 +62,7 @@ impl<Limiter: SpeedLimiter> DownloaderWrapper for DownloadSpeedLimiterDownloader
             if receiver.await.is_ok(){
                 limiter.reset().await;
             }
-            futures_util::future::pending::<()>()
+            futures_util::future::pending::<()>().await
         };
 
         Ok(async move {
