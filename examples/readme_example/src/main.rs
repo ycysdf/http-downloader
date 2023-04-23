@@ -22,8 +22,7 @@ async fn main() -> Result<()> {
     }
 
     let save_dir = PathBuf::from("C:/download");
-    // let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
-    let test_url = Url::parse("https://vip.shankuwang.com:8443/playurl/tu/m3u8?v=59586e514a48523570556e3849345376464a306e4938713338346d6573514b6a3962454469474b4374474871584543666977694f53572f524146665a756d7379532f533870715247664a4a54393361613076306a59656968366963582f632f712b30356e6a537470326b6b3d&k=e6b784fc9a8a457cf2fd87c66741db06&s=6a7633753943656f796b4d39535343477531616176513d3d&ts=1")?;
+    let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
     let (mut downloader, (status_state, speed_state, speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap()) // 块大小
