@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use futures_util::future::BoxFuture;
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
@@ -192,8 +193,10 @@ impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
             .boxed())
     }
 
-    fn on_cancel(&self) {
-        self.status_sender
-            .change_status(DownloaderStatus::Pending(NetworkItemPendingType::Stopping));
+    fn on_cancel(&self) -> BoxFuture<'static, ()> {
+        let status_sender = self.status_sender.clone();
+        async move {
+            status_sender.change_status(DownloaderStatus::Pending(NetworkItemPendingType::Stopping));
+        }.boxed()
     }
 }

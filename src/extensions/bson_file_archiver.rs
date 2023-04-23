@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::path::{Path, PathBuf};
 
 use anyhow::Error;
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture};
 use futures_util::FutureExt;
 
 use crate::{DownloadArchiveData, HttpDownloadConfig};

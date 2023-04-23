@@ -1,5 +1,6 @@
 use anyhow::Result;
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture};
+use futures_util::FutureExt;
 
 use crate::{ChunkData, DownloadError, DownloadingEndCause, DownloadStartError, HttpFileDownloader};
 
@@ -17,7 +18,7 @@ pub mod status_tracker;
 pub type DownloadFuture = BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>;
 
 
-pub trait DownloaderWrapper: Send + Sync + 'static {
+pub trait DownloaderWrapper: Send+Sync+'static {
     fn prepare_download(
         &mut self,
         _downloader: &mut HttpFileDownloader,
@@ -38,7 +39,9 @@ pub trait DownloaderWrapper: Send + Sync + 'static {
     ) -> Result<DownloadFuture, DownloadStartError> {
         Ok(download_future)
     }
-    fn on_cancel(&self) {}
+    fn on_cancel(&self)-> BoxFuture<'static,()> {
+        futures_util::future::ready(()).boxed()
+    }
 }
 
 pub trait DownloadExtensionBuilder: 'static {
@@ -95,9 +98,12 @@ macro_rules! impl_download_extension_tuple {
                 $(let download_future = $de.download(downloader,download_future)?;)*
                 Ok(download_future)
             }
-            fn on_cancel(&self) {
+            fn on_cancel(&self) -> BoxFuture<'static,()> {
                 let ($($de,)*) = &self;
-                $($de.on_cancel();)*
+                $(let $de = $de.on_cancel();)*
+                async move{
+                    $($de.await;)*
+                }.boxed()
             }
         }
 

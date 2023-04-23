@@ -1,18 +1,12 @@
-use std::future::Future;
 use std::num::{NonZeroU8, NonZeroUsize};
 use std::path::PathBuf;
-use std::pin::Pin;
-use std::task::{Context, Poll};
 use std::time::Duration;
 
 use anyhow::Result;
-use futures_util::{FutureExt, StreamExt};
-use futures_util::future::BoxFuture;
-use futures_util::stream::FuturesUnordered;
 use tracing::info;
 use url::Url;
 
-use http_downloader::{breakpoint_resume::DownloadBreakpointResumeExtension, DownloadError, DownloadFuture, DownloadingEndCause, HttpDownloaderBuilder, speed_tracker::DownloadSpeedTrackerExtension, status_tracker::DownloadStatusTrackerExtension};
+use http_downloader::{breakpoint_resume::DownloadBreakpointResumeExtension, DownloadingEndCause, HttpDownloaderBuilder, speed_tracker::DownloadSpeedTrackerExtension, status_tracker::DownloadStatusTrackerExtension};
 use http_downloader::bson_file_archiver::{ArchiveFilePath, BsonFileArchiverBuilder};
 use http_downloader::speed_limiter::DownloadSpeedLimiterExtension;
 
@@ -23,7 +17,8 @@ async fn main() -> Result<()> {
     }
 
     let save_dir = PathBuf::from("C:/download");
-    let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
+    // let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
+    let test_url = Url::parse("https://dldir1.qq.com/qqfile/qq/PCQQ9.7.1/QQ9.7.1.28940.exe")?;
     let (mut downloader, (_status_state, _speed_state, _speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
             .chunk_size(NonZeroUsize::new(1024 * 1024 * 10).unwrap())
@@ -60,55 +55,16 @@ async fn main() -> Result<()> {
 
     tokio::spawn(
         async move {
-            let mut futures_unordered = FuturesUnordered::new();
-            enum RunFuture {
-                DownloadFuture(DownloadFuture),
-                Cancel(BoxFuture<'static, ()>),
-            }
-            enum RunFutureResult {
-                DownloadFuture(Result<DownloadingEndCause, DownloadError>),
-                Cancel,
-            }
-            impl Future for RunFuture {
-                type Output = RunFutureResult;
+            loop {
+                let download_future = downloader.prepare_download()?;
+                let cancel_future = downloader.cancel();
+                tokio::spawn(async {
+                    tokio::time::sleep(Duration::from_secs(4)).await;
+                    cancel_future.await;
+                });
 
-                fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-                    match self.get_mut() {
-                        RunFuture::DownloadFuture(future) => {
-                            future.poll_unpin(cx).map(RunFutureResult::DownloadFuture)
-                        }
-                        RunFuture::Cancel(future) => {
-                            future.poll_unpin(cx).map(|_| RunFutureResult::Cancel)
-                        }
-                    }
-                }
-            }
-
-            let download_future = downloader.prepare_download()?;
-            futures_unordered.push(RunFuture::DownloadFuture(download_future));
-            futures_unordered.push(RunFuture::Cancel(async {
-                tokio::time::sleep(Duration::from_secs(4)).await
-            }.boxed()));
-            while let Some(result) = futures_unordered.next().await {
-                match result {
-                    RunFutureResult::DownloadFuture(r) => {
-                        match r? {
-                            DownloadingEndCause::DownloadFinished => {
-                                break;
-                            }
-                            DownloadingEndCause::Cancelled => {
-                                futures_unordered.push(RunFuture::Cancel(async {
-                                    tokio::time::sleep(Duration::from_secs(4)).await
-                                }.boxed()));
-                                let download_future = downloader.prepare_download()?;
-                                futures_unordered.push(RunFuture::DownloadFuture(download_future));
-                                continue;
-                            }
-                        }
-                    }
-                    RunFutureResult::Cancel => {
-                        downloader.cancel().await;
-                    }
+                if matches!(download_future.await?,DownloadingEndCause::DownloadFinished) {
+                    break;
                 }
             }
             Ok::<(), anyhow::Error>(())

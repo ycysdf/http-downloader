@@ -77,11 +77,17 @@ UI ：[https://github.com/ycysdf/http-downloader-tui](https://github.com/ycysdf/
 
 通过 `HttpDownloaderBuilder` `build` 函数参数去设置需要添加的扩展，需要传入一个元组，元组的成员就是扩展
 
-在下面实例里，我传入了4 个扩展，所以 `build` 函数除了返回 下载器实例以外，还会返回一个4个成员的元组，这个元组包含了扩展的状态信息，
+在下面实例里，我传入了4 个扩展，所以 `build` 函数除了返回 下载器实例以外，还会返回包含4个成员的元组，每个成员对应传入的扩展，
 
-例如 `DownloadSpeedTrackerExtension` 扩展，就对应 `DownloadSpeedTrackerState` 状态
+例如 `DownloadSpeedTrackerExtension` 扩展，就对应 `DownloadSpeedTrackerState`
 
-通过`DownloadSpeedTrackerState` 的  `reciver` 成员就可以去监听下载速度，或者通过 `download_speed`函数直接去获取下载速度
+通过`DownloadSpeedTrackerState` 的  `reciver` 成员就可以去监听下载速度，或者通过 `download_speed`函数直接去获取当前下载速度
+
+通过 `prepare_download` 去准备下载（要求 `&mut`），它返回 `Result<BoxFuture<'static, Result<DownloadingEndCause, DownloadError>>, DownloadStartError>`，
+
+这个`Future` 是 `'static` 的，除了`prepare_download`，其他方法都不需要`&mut`，
+
+你可以使用`prepare_download`保存返回的`Future`，然后使用 `Arc` 包裹 `build` 出来的 `donwnloader`，以便在多线程中使用
 
 ```rust
 use std::num::{NonZeroU8, NonZeroUsize};

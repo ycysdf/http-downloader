@@ -1,3 +1,5 @@
+extern crate core;
+
 pub use chunk_item::*;
 pub use chunk_iterator::*;
 pub use chunk_manager::*;
@@ -13,3 +15,4 @@ mod download_way;
 mod downloader;
 mod downloader_builder;
 mod extensions;
+mod exclusive;

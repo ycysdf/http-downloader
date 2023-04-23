@@ -10,8 +10,8 @@ use futures_util::{FutureExt, StreamExt};
 use futures_util::future::{BoxFuture, OptionFuture};
 use futures_util::stream::FuturesUnordered;
 use reqwest::Request;
-use tokio::{select, sync};
 use tokio::fs::File;
+use tokio::sync;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -35,8 +35,8 @@ pub struct ChunkManager {
     downloaded_len_sender: Arc<sync::watch::Sender<u64>>,
     pub chunk_iterator: ChunkIterator,
     downloading_chunks: Mutex<HashMap<usize, Arc<ChunkItem>>>,
-    download_connection_count_sender: sync::watch::Sender<NonZeroU8>,
-    pub download_connection_count_receiver: sync::watch::Receiver<NonZeroU8>,
+    download_connection_count_sender: sync::watch::Sender<u8>,
+    pub download_connection_count_receiver: sync::watch::Receiver<u8>,
     client: reqwest::Client,
     cancel_token: CancellationToken,
     pub superfluities_connection_count: AtomicU8,
@@ -56,7 +56,7 @@ impl ChunkManager {
         retry_count: u8,
     ) -> Self {
         let (download_connection_count_sender, download_connection_count_receiver) =
-            sync::watch::channel(download_connection_count);
+            sync::watch::channel(download_connection_count.get());
 
         Self {
             downloaded_len_sender,
@@ -75,8 +75,8 @@ impl ChunkManager {
     pub fn change_connection_count(
         &self,
         connection_count: NonZeroU8,
-    ) -> Result<(), sync::watch::error::SendError<NonZeroU8>> {
-        self.download_connection_count_sender.send(connection_count)
+    ) -> Result<(), sync::watch::error::SendError<u8>> {
+        self.download_connection_count_sender.send(connection_count.get())
     }
 
     pub fn change_chunk_size(&self, chunk_size: NonZeroUsize) {
@@ -89,7 +89,7 @@ impl ChunkManager {
     }
 
     pub fn connection_count(&self) -> u8 {
-        self.download_connection_count_sender.borrow().get()
+        *self.download_connection_count_sender.borrow()
     }
 
     pub fn clone_request(request: &Request) -> Box<Request> {
@@ -109,7 +109,7 @@ impl ChunkManager {
         breakpoint_resume: Option<Arc<crate::BreakpointResume>>,
     ) -> Result<DownloadingEndCause, DownloadError> {
         enum RunFuture<'a> {
-            DownloadConnectionCountChanged(BoxFuture<'a, (sync::watch::Receiver<NonZeroU8>, u8)>),
+            DownloadConnectionCountChanged(BoxFuture<'a, (sync::watch::Receiver<u8>, u8)>),
             ChunkDownloadEnd {
                 chunk_index: usize,
                 future: BoxFuture<'a, Result<DownloadingEndCause, DownloadError>>,
@@ -119,7 +119,7 @@ impl ChunkManager {
         #[derive(Debug)]
         enum RunFutureResult {
             DownloadConnectionCountChanged {
-                receiver: sync::watch::Receiver<NonZeroU8>,
+                receiver: sync::watch::Receiver<u8>,
                 download_connection_count: u8,
             },
             ChunkDownloadEnd {
@@ -198,7 +198,7 @@ impl ChunkManager {
             let mut receiver = self.download_connection_count_receiver.clone();
             async move {
                 let _ = receiver.changed().await;
-                let i = receiver.borrow().get();
+                let i = *receiver.borrow();
                 (receiver, i)
             }.boxed()
         }));
@@ -216,97 +216,110 @@ impl ChunkManager {
             }
         };
 
-        let run_future = async {
-            while let Some(result) = futures_unordered.next().await {
-                match result {
-                    RunFutureResult::DownloadConnectionCountChanged {
-                        download_connection_count,
-                        mut receiver
-                    } => {
-                        let current_count = self.get_chunks().await.len();
-                        let diff = download_connection_count as i16 - current_count as i16;
-                        if diff >= 0 {
-                            self.superfluities_connection_count
-                                .store(0, Ordering::SeqCst);
-                            for _ in 0..diff {
-                                match download_next_chunk().await {
-                                    None => {
-                                        is_iter_finished = true;
-                                        break;
-                                    }
-                                    Some(future) => futures_unordered.push(future)
-                                }
-                            }
-                        } else {
-                            self.superfluities_connection_count
-                                .store(diff.unsigned_abs() as u8, Ordering::SeqCst);
-                        }
-
-                        futures_unordered.push(RunFuture::DownloadConnectionCountChanged(async move {
-                            let _ = receiver.changed().await;
-                            let i = receiver.borrow().get();
-                            (receiver, i)
-                        }.boxed()))
+        let mut result = Result::<DownloadingEndCause, DownloadError>::Ok(DownloadingEndCause::DownloadFinished);
+        while let Some(future_result) = futures_unordered.next().await {
+            match future_result {
+                RunFutureResult::DownloadConnectionCountChanged {
+                    download_connection_count,
+                    mut receiver
+                } => {
+                    if download_connection_count == 0 {
+                        continue;
                     }
-                    RunFutureResult::ChunkDownloadEnd {
-                        chunk_index,
-                        result: Ok(DownloadingEndCause::DownloadFinished)
-                    } => {
-                        let (downloading_chunk_count, chunk_item) = self.remove_chunk(chunk_index).await;
-                        let _ = chunk_item.ok_or(DownloadError::ChunkRemoveFailed(chunk_index))?;
 
-                        #[cfg(feature = "breakpoint-resume")]
-                        save_data().await;
-                        if is_iter_finished {
-                            if downloading_chunk_count == 0 {
-                                debug_assert_eq!(
-                                    self.chunk_iterator.content_length,
-                                    *self.downloaded_len_sender.borrow()
-                                );
-                                break;
-                            }
-                        } else if self.superfluities_connection_count.load(Ordering::SeqCst) == 0 {
+                    let current_count = self.get_chunks().await.len();
+                    let diff = download_connection_count as i16 - current_count as i16;
+                    if diff >= 0 {
+                        self.superfluities_connection_count
+                            .store(0, Ordering::SeqCst);
+                        for _ in 0..diff {
                             match download_next_chunk().await {
                                 None => {
                                     is_iter_finished = true;
-                                    if downloading_chunk_count == 0 {
-                                        debug_assert_eq!(
-                                            self.chunk_iterator.content_length,
-                                            *self.downloaded_len_sender.borrow()
-                                        );
-                                        break;
-                                    }
+                                    break;
                                 }
                                 Some(future) => futures_unordered.push(future)
                             }
-                        } else {
-                            self.superfluities_connection_count
-                                .fetch_sub(1, Ordering::SeqCst);
                         }
+                    } else {
+                        self.superfluities_connection_count
+                            .store(diff.unsigned_abs() as u8, Ordering::SeqCst);
                     }
-                    RunFutureResult::ChunkDownloadEnd {
-                        result: Err(err),
-                        ..
-                    } => {
-                        #[cfg(feature = "breakpoint-resume")]
-                        save_data().await;
-                        return Err(err);
+
+                    futures_unordered.push(RunFuture::DownloadConnectionCountChanged(async move {
+                        let _ = receiver.changed().await;
+                        let i = *receiver.borrow();
+                        (receiver, i)
+                    }.boxed()))
+                }
+                RunFutureResult::ChunkDownloadEnd {
+                    chunk_index,
+                    result: Ok(DownloadingEndCause::DownloadFinished)
+                } => {
+                    let (downloading_chunk_count, _) = self.remove_chunk(chunk_index).await;
+
+                    #[cfg(feature = "breakpoint-resume")]
+                    save_data().await;
+                    if is_iter_finished {
+                        if downloading_chunk_count == 0 {
+                            debug_assert_eq!(
+                                self.chunk_iterator.content_length,
+                                *self.downloaded_len_sender.borrow()
+                            );
+                            break;
+                        }
+                    } else if self.superfluities_connection_count.load(Ordering::SeqCst) == 0 {
+                        match download_next_chunk().await {
+                            None => {
+                                is_iter_finished = true;
+                                if downloading_chunk_count == 0 {
+                                    debug_assert_eq!(
+                                        self.chunk_iterator.content_length,
+                                        *self.downloaded_len_sender.borrow()
+                                    );
+                                    break;
+                                }
+                            }
+                            Some(future) => futures_unordered.push(future)
+                        }
+                    } else {
+                        self.superfluities_connection_count
+                            .fetch_sub(1, Ordering::SeqCst);
                     }
-                    _ => {}
+                }
+                RunFutureResult::ChunkDownloadEnd {
+                    result: Err(err),
+                    ..
+                } => {
+                    // 只记录第一个错误
+                    if matches!(result,Ok(DownloadingEndCause::DownloadFinished)) {
+                        result = Err(err);
+                        // 取消监听 连接数 的更改
+                        let _ =
+                            self.download_connection_count_sender.send(0);
+                        // 取消其他的 Chunk 下载
+                        self.cancel_token.cancel();
+                    }
+                }
+                RunFutureResult::ChunkDownloadEnd {
+                    result: Ok(DownloadingEndCause::Cancelled),
+                    ..
+                } => {
+                    if matches!(result,Ok(DownloadingEndCause::DownloadFinished)) {
+                        result = Ok(DownloadingEndCause::Cancelled);
+                        // 取消监听 连接数 的更改
+                        let _ =
+                            self.download_connection_count_sender.send(0);
+                    }
                 }
             }
-            Result::<DownloadingEndCause, DownloadError>::Ok(DownloadingEndCause::DownloadFinished)
-        };
-
-        let cancel_token = self.cancel_token.clone();
-        select! {
-            r = run_future => {r}
-            _ = cancel_token.cancelled() => {
-                #[cfg(feature = "breakpoint-resume")]
-                save_data().await;
-                Ok(DownloadingEndCause::Cancelled)
-            }
         }
+        // 如果没有完成，怎保存进度
+        if !matches!(result,Ok(DownloadingEndCause::DownloadFinished)) {
+            #[cfg(feature = "breakpoint-resume")]
+            save_data().await;
+        }
+        result
     }
     async fn insert_chunk(&self, item: Arc<ChunkItem>) {
         let mut downloading_chunks = self.downloading_chunks.lock().await;
