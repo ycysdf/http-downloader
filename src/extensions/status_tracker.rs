@@ -9,7 +9,6 @@ use crate::{DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, Downloa
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkItemPendingType {
-    QueueUp,
     Starting,
     Stopping,
     Initializing,
@@ -117,17 +116,16 @@ impl DownloaderWrapper for DownloadStatusDownloaderWrapper {
         downloader.downloading_state_oneshot_vec.push(sender);
         match self.status() {
             DownloaderStatus::Running => return Err(DownloadStartError::AlreadyDownloading),
-            DownloaderStatus::Pending(pending_type) => match pending_type {
+            DownloaderStatus::Pending(pending_type) => return match pending_type {
                 NetworkItemPendingType::Starting => {
-                    return Err(DownloadStartError::Starting);
+                    Err(DownloadStartError::Starting)
                 }
                 NetworkItemPendingType::Stopping => {
-                    return Err(DownloadStartError::Stopping);
+                    Err(DownloadStartError::Stopping)
                 }
                 NetworkItemPendingType::Initializing => {
-                    return Err(DownloadStartError::Initializing);
+                    Err(DownloadStartError::Initializing)
                 }
-                _ => {}
             },
             _ => {}
         };

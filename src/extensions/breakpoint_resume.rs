@@ -9,7 +9,7 @@ use futures_util::future::{BoxFuture};
 use futures_util::FutureExt;
 use tokio::{select, sync};
 
-use crate::{BreakpointResume, ChunkInfo, ChunkRange, DownloadArchiveData, DownloadError, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingEndCause, DownloadingState, DownloadStartError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
+use crate::{BreakpointResume, ChunkInfo, ChunkRange, DownloadArchiveData, DownloaderWrapper, DownloadExtensionBuilder, DownloadFuture, DownloadingState, DownloadStartError, DownloadWay, HttpDownloadConfig, HttpFileDownloader};
 use crate::exclusive::Exclusive;
 
 pub enum FileSave {
@@ -45,11 +45,6 @@ impl<T: DownloadDataArchiverBuilder> DownloadBreakpointResumeExtension<T> {
             download_archiver_builder
         }
     }
-}
-
-pub enum DownloadEndInfo<'a> {
-    StartError(&'a DownloadStartError),
-    DownloadEnd(&'a Result<DownloadingEndCause, DownloadError>),
 }
 
 pub trait DownloadDataArchiver: Send + Sync + 'static {

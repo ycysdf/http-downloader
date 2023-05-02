@@ -558,6 +558,7 @@ impl HttpFileDownloader {
                         ));
                         DownloadWay::Ranges(chunk_manager)
                     } else {
+                        // download way changed? reset archive_data?
                         DownloadWay::Single(SingleDownload::new(
                             cancel_token,
                             downloaded_len_sender,

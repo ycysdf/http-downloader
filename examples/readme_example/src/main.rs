@@ -52,7 +52,7 @@ async fn main() -> Result<()> {
     let _byte_per_second = speed_state.download_speed(); // get download speed，Byte per second，获取速度，字节每秒
     let _speed_receiver = speed_state.receiver; // get download speed watcher，速度监听器
 
-    // downloader.cancel() // 取消下载
+    // downloader.cancel().await; // 取消下载
 
     // 打印下载进度
     // Print download Progress
