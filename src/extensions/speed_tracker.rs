@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use futures_util::FutureExt;
@@ -88,7 +88,7 @@ impl DownloaderWrapper for DownloadSpeedDownloaderWrapper {
         let downloading_state_receiver = self.downloading_state_receiver.take().unwrap();
 
         let mut downloaded_len_receiver = self.downloaded_len_receiver.clone();
-        let downloaded_len_sender = self.download_speed_sender.clone();
+        let download_speed_sender = self.download_speed_sender.clone();
         let log = self.log;
 
 
@@ -97,39 +97,35 @@ impl DownloaderWrapper for DownloadSpeedDownloaderWrapper {
                 .await
                 .map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
 
-            let mut instant = Instant::now();
             let mut last_downloaded_len = if let DownloadWay::Ranges(chunk_manager) = &download_way_receiver.download_way {
                 chunk_manager.downloaded_len()
             } else {
                 0
             };
             loop {
-                downloaded_len_receiver.changed().await.map_err(|_| anyhow::Error::msg("ReceiveDownloadWawFailed"))?;
-                if instant.elapsed().as_millis() > 1000 {
-                    let downloaded_len = *downloaded_len_receiver.borrow();
-                    let value = downloaded_len.max(last_downloaded_len) - last_downloaded_len;
-                    instant = Instant::now();
-                    #[cfg(feature = "tracing")]
-                    if log {
-                        let value = value as f64 / 1024_f64;
-                        if value > 1024_f64 {
-                            tracing::info!("Download speed: {:.2} Mb/s", value / 1024_f64);
-                        } else {
-                            tracing::info!("Download speed: {:.2} Kb/s", value);
-                        }
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let downloaded_len = *downloaded_len_receiver.borrow();
+                let value = downloaded_len.max(last_downloaded_len) - last_downloaded_len;
+                #[cfg(feature = "tracing")]
+                if log {
+                    let value = value as f64 / 1024_f64;
+                    if value > 1024_f64 {
+                        tracing::info!("Download speed: {:.2} Mb/s", value / 1024_f64);
+                    } else {
+                        tracing::info!("Download speed: {:.2} Kb/s", value);
                     }
-                    let _ = downloaded_len_sender.send(value);
-                    last_downloaded_len = downloaded_len;
                 }
+                let _ = download_speed_sender.send(value);
+                last_downloaded_len = downloaded_len;
             }
         };
-        let downloaded_len_sender = self.download_speed_sender.clone();
+        let download_speed_sender = self.download_speed_sender.clone();
 
         Ok(async move {
             select! {
                 r = future => {r},
                 r = download_future => {
-                    let _ = downloaded_len_sender.send(0);
+                    let _ = download_speed_sender.send(0);
                     r
                 }
             }
