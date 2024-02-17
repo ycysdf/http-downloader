@@ -1,3 +1,7 @@
 /target
 /logs
 /.idea
+Cargo.lock
+.cargo/config
+.cargo/config.toml
+/.vscode
