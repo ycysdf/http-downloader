@@ -27,7 +27,7 @@ tokio-util = { version = "0.7", features = [] }
 thiserror = "1"
 anyhow = "1"
 async-trait = "0.1"
-bytes = "1.3"
+bytes = "1.5"
 futures-util = { version = "0.3" }
 url = { version = "2" }
 
