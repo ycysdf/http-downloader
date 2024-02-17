@@ -17,7 +17,6 @@ async fn main() -> Result<()> {
     }
 
     let save_dir = PathBuf::from("C:/download");
-    // let test_url = Url::parse("https://releases.ubuntu.com/22.04/ubuntu-22.04.2-desktop-amd64.iso")?;
     let test_url = Url::parse("https://dldir1.qq.com/qqfile/qq/PCQQ9.7.1/QQ9.7.1.28940.exe")?;
     let (mut downloader, (_status_state, _speed_state, _speed_limiter, ..)) =
         HttpDownloaderBuilder::new(test_url, save_dir)
